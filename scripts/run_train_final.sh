@@ -36,10 +36,10 @@ export HUGGING_FACE_HUB_TOKEN="${HUGGING_FACE_HUB_TOKEN:-$HF_TOKEN}"
 #                 Configuration Switches (true/false)
 #############################################################
 
-RUN_STEP1=true     # Step1 Activation extraction + Transport plan computation
-RUN_STEP2=true     # Step2 Transport plan-based fusion
-RUN_STEP3=true      # Step3 Training + Dual evaluation (original benchmark + ablation benchmark)
-RUN_STEP4=false     # Step4 Now just a hint, actual eval has been done in Step3
+RUN_STEP1=${RUN_STEP1:-true}     # Step1 Activation extraction + Transport plan computation
+RUN_STEP2=${RUN_STEP2:-true}     # Step2 Transport plan-based fusion
+RUN_STEP3=${RUN_STEP3:-true}     # Step3 Training + Dual evaluation
+RUN_STEP4=${RUN_STEP4:-false}    # Step4 is informational only
 
 #############################################################
 #                 Run Label Configuration
@@ -376,6 +376,25 @@ TASK_CONFIGS=(
   "config_indonesian"
   "config_malay"
 )
+
+# Optional comma-separated task selection for merge-only comparisons, e.g.
+# TASK_NAMES=medical,thai RUN_STEP3=false bash scripts/run_train_final.sh
+if [ -n "${TASK_NAMES:-}" ]; then
+  TASK_CONFIGS=()
+  IFS=',' read -ra _SELECTED_TASK_NAMES <<< "${TASK_NAMES}"
+  for _task_name in "${_SELECTED_TASK_NAMES[@]}"; do
+    _task_name="${_task_name//[[:space:]]/}"
+    case "${_task_name}" in
+      medical|thai|finance|cantonese|indonesian|malay)
+        TASK_CONFIGS+=("config_${_task_name}")
+        ;;
+      *)
+        echo "[ERROR] Unknown TASK_NAMES entry: ${_task_name}" >&2
+        exit 2
+        ;;
+    esac
+  done
+fi
 
 #############################################
 #                 Check Required Scripts

@@ -975,6 +975,11 @@ def main():
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--fp16", action="store_true", help="Use fp16 training（ bf16）")
+    parser.add_argument(
+        "--honor_precision_flags",
+        action="store_true",
+        help="Honor --fp16 in TrainingArguments; omitted preserves the legacy FP32 behavior.",
+    )
 
     # LoRA
     parser.add_argument(
@@ -1680,8 +1685,8 @@ def main():
         save_steps=args.save_steps,
         save_total_limit=2,
         seed=args.seed,
-        fp16=False,
-        bf16=False,
+        fp16=use_fp16 if args.honor_precision_flags else False,
+        bf16=use_bf16 if args.honor_precision_flags else False,
         remove_unused_columns=False,
         report_to="none",
         save_strategy="no",

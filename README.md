@@ -1,15 +1,30 @@
 # Cross-Architecture Merging for Large Language Models
 
-This repository contains the implementation of Cross-Architecture Merging for Large Language Models.
+本仓库现在只保留两条方法线：
 
-**Quick links**: [MODELS.md](MODELS.md) — every Hugging Face repo used (1B donor × 8B base, all 6 tasks) with their α / lr / dataset. [REPRODUCE.md](REPRODUCE.md) — end-to-end commands.
+1. **Transport and Merge（原仓库方法，简称 T&M/HOT）**：使用数据和 forward activation，先计算神经元与层间 OT，再将 8B 通用模型迁移到 1B 领域模型。原始入口是 `run_activs_and_hot.py`、`generate_hot_residual.py` 和 `scripts/run_train_final.sh`。
+2. **DF-OT-Procrustes（本仓库新增方法，简称 DFOP）**：全流程不使用数据、tokenizer 或 forward；对 Q/K/V/O/Gate/Up/Down 七类矩阵分别计算跨模型层代价、路由矩阵与异构维度映射。实现位于 `core/dfop/`，入口是 `scripts/run_dfop_fusion.py` 和 `scripts/run_dfop_tasks.py`。
+
+已移除早期的 DF-SRN/DCASF/SVD-spectrum 试验实现，避免实验时误选旧方法。评测与数据加载文件仍被保留，因为它们属于原仓库复现或两种方法的公共测评基础设施。
+
+**快速入口**：[DFOP 数学与实验方案](DF-OT-Procrustes：实验与代码实现方案.md) · [DFOP 实现规范](DF-OT-Procrustes：无数据异构模型融合实现规范.md) · [GPU 对比运行指南](DFOP_GPU_RUN.md) · [原方法模型表](MODELS.md) · [原方法复现](REPRODUCE.md)
+<!-- Methods overview -->
 
 ## Overview
+
+### 原方法：Transport and Merge
 
 1. **Activation Extraction**: Extracting activations from source and target models
 2. **Transport Plan Computation**: Computing transport plans (P and Q matrices) using Sinkhorn algorithm
 3. **Model Fusion**: Fusing knowledge from source model to target model using computed transport plans
 4. **Training**: Fine-tuning the fused model with transport-based residual connections
+
+### 新方法：DF-OT-Procrustes
+
+1. **独立模块路由**：Q、K、V、O、Gate、Up、Down 各生成一个逐行归一化的目标层到源层路由矩阵
+2. **无数据层代价**：由截断 SVD 谱点、OT 和 Procrustes 残差直接计算跨模型层对代价
+3. **异构维度映射**：用输入侧和输出侧重心映射处理不同 hidden、KV 与 FFN 宽度
+4. **受控融合**：将映射后的源层更新到目标层，并用 trust ratio 限制相对更新范数
 
 ## Structure
 
@@ -25,12 +40,18 @@ This repository contains the implementation of Cross-Architecture Merging for La
 │   ├── hot_transport.py     # Transport plan computation (Sinkhorn, correlation distance)
 │   ├── hot_transport_chunk.py # Chunked stable HOT (compute_P_stable, used by run_activs_and_hot)
 │   ├── generate_hot_residual.py  # Transport-based residual generation and model fusion
-│   └── train_hot_residual_sft.py # Training script with transport-based residual support
+│   ├── train_hot_residual_sft.py # Training script with transport-based residual support
+│   └── dfop/                # Data-free OT-Procrustes implementation
 ├── data_loading/            # Dataset loading utilities (avoids shadowing HF 'datasets')
 │   ├── dataset_general_texts.py
 │   └── dataset_gsm8k.py
 ├── scripts/                 # Scripts
 │   ├── download_models.py   # Download every HF model used by the paper (see MODELS.md)
+│   ├── run_hot_merge_tasks.py # Original T&M merge-only launcher (medical/thai/malay)
+│   ├── run_dfop_tasks.py    # DFOP three-task multi-GPU launcher
+│   ├── derive_dfop_attn_tasks.py # Exact DFOP-Full -> DFOP-Attn derivation
+│   ├── evaluate_dfop_tasks.py # Common five-variant evaluator
+│   ├── summarize_merge_results.py # Five-variant CSV/Markdown summary
 │   ├── run_pipeline.sh      # Minimal end-to-end pipeline example (configurable via env vars)
 │   └── run_train_final.sh   # Full reproduction script (6 tasks: medical, thai, finance, cantonese, indonesian, malay)
 ├── evaluation/              # Per-domain evaluation pipelines (code only, no large assets)

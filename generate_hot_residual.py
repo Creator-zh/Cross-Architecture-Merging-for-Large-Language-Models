@@ -429,119 +429,6 @@ def _load_hot_bundle_expand(
     return P_full, Qgrid_full, L_eff, keptA, keptB, path
 
 
-def _expand_hot_p_from_file(
-    path: str,
-    full_l: int,
-    full_m: int,
-) -> Tuple[torch.Tensor, List[int], List[int], Dict[str, Any]]:
-    raw = _load_tensor(path)
-    if not (isinstance(raw, dict) and "P" in raw):
-        raise ValueError(f"{path}: unexpected file format; expect dict with P")
-
-    P_small = torch.as_tensor(raw["P"], dtype=torch.float32)
-    L_eff = int(raw.get("L", P_small.shape[0]))
-    M_eff = int(raw.get("M", P_small.shape[1]))
-    keptA: List[int] = list(map(int, raw.get("kept_layer_idx", list(range(L_eff)))))
-    keptB: List[int] = list(map(int, raw.get("kept_layer_idx_B", keptA)))
-
-    if P_small.shape != (L_eff, M_eff):
-        raise ValueError(f"{path}: P shape {tuple(P_small.shape)} != ({L_eff}, {M_eff})")
-    if len(keptA) != L_eff or len(keptB) != M_eff:
-        raise ValueError(
-            f"{path}: kept_layer_idx length mismatch with L/M; "
-            f"got {len(keptA)}/{len(keptB)} vs {L_eff}/{M_eff}"
-        )
-
-    P_full = torch.zeros((full_l, full_m), dtype=torch.float32)
-    for i_small, i_full in enumerate(keptA):
-        if not (0 <= i_full < full_l):
-            raise ValueError(f"{path}: A layer index {i_full} outside full_l={full_l}")
-        for j_small, j_full in enumerate(keptB):
-            if not (0 <= j_full < full_m):
-                raise ValueError(f"{path}: B layer index {j_full} outside full_m={full_m}")
-            P_full[i_full, j_full] = P_small[i_small, j_small]
-
-    meta = {
-        "path": path,
-        "L_eff": L_eff,
-        "M_eff": M_eff,
-        "P_small_shape": list(P_small.shape),
-    }
-    return P_full, keptA, keptB, meta
-
-
-def _load_hot_p_expand(
-    hot_dir: str,
-    fname_stem: str,
-    full_l: int,
-    full_m: int,
-) -> Tuple[torch.Tensor, int, int, List[int], List[int], str]:
-    path = _find_hot_file(hot_dir, fname_stem)
-    P_full, keptA, keptB, meta = _expand_hot_p_from_file(path, full_l, full_m)
-    return P_full, int(meta["L_eff"]), int(meta["M_eff"]), keptA, keptB, path
-
-
-def _resize_singular_values(source: torch.Tensor, target_len: int) -> torch.Tensor:
-    source = torch.as_tensor(source, dtype=torch.float32).flatten()
-    if target_len <= 0:
-        return torch.empty(0, dtype=torch.float32, device=source.device)
-    if source.numel() >= target_len:
-        return source[:target_len].clone()
-    out = torch.zeros(target_len, dtype=torch.float32, device=source.device)
-    if source.numel() > 0:
-        out[: source.numel()] = source
-    return out
-
-
-def _scale_singular_values_to_target(
-    source: torch.Tensor,
-    target: torch.Tensor,
-    scale_mode: str = "match_l2",
-    eps: float = 1e-12,
-) -> Tuple[torch.Tensor, float]:
-    source_resized = _resize_singular_values(source, int(target.numel())).to(target.device)
-    target = torch.as_tensor(target, dtype=torch.float32, device=target.device).flatten()
-
-    if scale_mode == "none":
-        return source_resized, 1.0
-    if scale_mode == "match_l2":
-        src_scale = torch.linalg.vector_norm(source_resized).clamp_min(eps)
-        dst_scale = torch.linalg.vector_norm(target).clamp_min(eps)
-    elif scale_mode == "match_mean":
-        src_scale = source_resized.abs().mean().clamp_min(eps)
-        dst_scale = target.abs().mean().clamp_min(eps)
-    elif scale_mode == "match_max":
-        src_scale = source_resized.abs().max().clamp_min(eps)
-        dst_scale = target.abs().max().clamp_min(eps)
-    else:
-        raise ValueError(f"Unsupported SVD scale mode: {scale_mode}")
-
-    factor = (dst_scale / src_scale).to(torch.float32)
-    return source_resized * factor, float(factor.item())
-
-
-@torch.no_grad()
-def _svd_spectral_contribution(
-    weight_a: torch.Tensor,
-    weight_b: torch.Tensor,
-    scale_mode: str = "match_l2",
-) -> Tuple[torch.Tensor, Dict[str, Any]]:
-    WA = torch.as_tensor(weight_a, dtype=torch.float32)
-    WB = torch.as_tensor(weight_b, dtype=torch.float32, device=WA.device)
-    U_A, S_A, Vh_A = torch.linalg.svd(WA, full_matrices=False)
-    S_B = torch.linalg.svdvals(WB)
-    S_B_scaled, factor = _scale_singular_values_to_target(S_B, S_A, scale_mode=scale_mode)
-    contribution = (U_A * S_B_scaled.unsqueeze(0)) @ Vh_A
-    info = {
-        "rank_a": int(S_A.numel()),
-        "rank_b": int(S_B.numel()),
-        "rank_b_used": int(min(S_A.numel(), S_B.numel())),
-        "scale_mode": scale_mode,
-        "scale_factor": factor,
-    }
-    return contribution.to(dtype=weight_a.dtype, device=weight_a.device), info
-
-
 # =========================
 # Low-memory utilities: chunked triple matrix multiplication
 # =========================
@@ -1069,203 +956,6 @@ def fuse_attention_only_from_hot_dir(
     return report
 
 
-@torch.no_grad()
-def fuse_attention_only_from_hot_dir_svd(
-    modelA: nn.Module,
-    modelB: nn.Module,
-    hot_dir: str,
-    alpha: float = 0.1,
-    use_language_model_only: bool = True,
-    verbose: bool = False,
-    attn_device: str = "cuda:0",
-    use_hot_as_residual: bool = False,
-    hot_residual_scale: float = 1.0,
-    hot_neuron_select_dir: Optional[str] = None,
-    svd_scale_mode: str = "match_l2",
-) -> Dict[str, Any]:
-    """
-    Data-free layer-inner fusion using HOT layer P only.
-
-    For each attention component and target layer i:
-      P_eff[i,j] = sqrt(P_post[i,j]) * sqrt(P_pre[i,j])
-      delta_W_i = sum_j L_eff * P_eff[i,j] * U_A_i scaled(S_B_j) V_A_i^T
-
-    Q_list from HOT files is intentionally ignored. B singular values are resized
-    to A rank and scaled to A's spectrum according to svd_scale_mode.
-    """
-    baseA = _maybe_language_submodule(modelA, use_language_model_only)
-    baseB = _maybe_language_submodule(modelB, use_language_model_only)
-
-    blocksA = _collect_attn_blocks(baseA)
-    blocksB = _collect_attn_blocks(baseB)
-    if len(blocksA) == 0 or len(blocksB) == 0:
-        raise RuntimeError(f"No attention blocks found. A={len(blocksA)}, B={len(blocksB)}")
-
-    L_full, M_full = len(blocksA), len(blocksB)
-    attn_dev = torch.device(attn_device)
-    if attn_dev.type == "cuda" and not torch.cuda.is_available():
-        print(f"[SVD][Warn] Requested {attn_device}, but CUDA is unavailable. Falling back to CPU.")
-        attn_dev = torch.device("cpu")
-
-    report: Dict[str, Any] = {
-        "fusion_method": "svd",
-        "hot_dir": hot_dir,
-        "alpha": alpha,
-        "use_language_model_only": use_language_model_only,
-        "hot_mode": "residual" if use_hot_as_residual else "additive_direct",
-        "hot_residual_scale": hot_residual_scale,
-        "svd_scale_mode": svd_scale_mode,
-        "L_full": L_full,
-        "M_full": M_full,
-        "components": {},
-        "attn": {"device": str(attn_dev)},
-        "notes": "Uses HOT P only; ignores Q_list and injects B singular values into A singular vectors.",
-    }
-
-    hot_sel = None
-    if hot_neuron_select_dir:
-        kinds_sel = ["Q", "K", "V", "O"]
-        hot_sel = _load_top_indices_dir(hot_neuron_select_dir, kinds=kinds_sel, num_layers=L_full)
-        report["hot_neuron_select"] = {"dir": hot_neuron_select_dir, "kinds": kinds_sel}
-    else:
-        report["hot_neuron_select"] = {"dir": None, "kinds": [], "enabled": False}
-
-    WB: Dict[str, List[torch.Tensor]] = {c: [] for c in ["Q", "K", "V", "O"]}
-    for comp in ["Q", "K", "V", "O"]:
-        for bhB in blocksB:
-            linB: nn.Linear = bhB.map[comp]  # type: ignore
-            WB[comp].append(linB.weight.detach().to("cpu"))
-
-    for comp in ["Q", "K", "V", "O"]:
-        if verbose:
-            print(f"[SVD Fuse] component = {comp}")
-
-        P_post, L_post, M_post, keptA_post, keptB_post, path_post = _load_hot_p_expand(
-            hot_dir, f"hot_{comp}", L_full, M_full
-        )
-        P_pre, L_pre, M_pre, keptA_pre, keptB_pre, path_pre = _load_hot_p_expand(
-            hot_dir, f"hot_{comp}_pre", L_full, M_full
-        )
-        P_eff = torch.sqrt(P_post.clamp_min(0)) * torch.sqrt(P_pre.clamp_min(0))
-        L_eff = int(round(math.sqrt(max(1, L_post * L_pre))))
-
-        comp_rep: Dict[str, Any] = {
-            "files": {"post": path_post, "pre": path_pre},
-            "L_post": L_post,
-            "L_pre": L_pre,
-            "M_post": M_post,
-            "M_pre": M_pre,
-            "L_eff": L_eff,
-            "kept_layers_A": {"post": keptA_post, "pre": keptA_pre},
-            "kept_layers_B": {"post": keptB_post, "pre": keptB_pre},
-            "layers": [],
-            "pairs_used": 0,
-            "pairs_skipped": 0,
-            "neuron_select_enabled": bool(hot_sel is not None),
-        }
-
-        sv_b: List[torch.Tensor] = []
-        for j, Wb_cpu in enumerate(WB[comp]):
-            Wb = Wb_cpu.to(attn_dev, dtype=torch.float32)
-            sv = torch.linalg.svdvals(Wb).detach().to("cpu")
-            sv_b.append(sv)
-            if verbose:
-                print(f"  [SVD Fuse] comp={comp}, B layer {j}: rank={sv.numel()}")
-            del Wb
-            if attn_dev.type == "cuda":
-                torch.cuda.empty_cache()
-
-        for i, bhA in enumerate(blocksA):
-            linA: nn.Linear = bhA.map[comp]  # type: ignore
-            WA = linA.weight
-            rec_i: Dict[str, Any] = {
-                "layer_i": i,
-                "A_weight_shape": list(WA.shape),
-                "pairs": [],
-                "skipped": False,
-                "skip_reason": None,
-            }
-
-            WA_work = WA.detach().to(attn_dev, dtype=torch.float32)
-            U_A, S_A, Vh_A = torch.linalg.svd(WA_work, full_matrices=False)
-            spectrum_accum = torch.zeros_like(S_A)
-            scale_factors = []
-
-            for j in range(M_full):
-                p_scale = float(L_eff) * float(P_eff[i, j].item())
-                pair_rec = {"j": j, "scale": p_scale, "used": False, "skip_reason": None}
-                if p_scale == 0.0:
-                    pair_rec["skip_reason"] = "scale=0 (P_eff=0 or L_eff=0)"
-                    rec_i["pairs"].append(pair_rec)
-                    comp_rep["pairs_skipped"] += 1
-                    continue
-
-                s_b = sv_b[j].to(attn_dev)
-                s_b_scaled, factor = _scale_singular_values_to_target(
-                    s_b, S_A, scale_mode=svd_scale_mode
-                )
-                spectrum_accum.add_(s_b_scaled, alpha=p_scale)
-                pair_rec["used"] = True
-                pair_rec["rank_b"] = int(s_b.numel())
-                pair_rec["scale_factor_to_A"] = factor
-                rec_i["pairs"].append(pair_rec)
-                comp_rep["pairs_used"] += 1
-                scale_factors.append(factor)
-
-            W_delta = (U_A * spectrum_accum.unsqueeze(0)) @ Vh_A
-            W_delta = W_delta.to(device=WA.device, dtype=WA.dtype)
-            rec_i["delta_mean_abs"] = float(W_delta.abs().mean().item())
-            rec_i["delta_norm"] = float(torch.linalg.vector_norm(W_delta.float()).item())
-            if scale_factors:
-                rec_i["scale_factor_mean"] = float(sum(scale_factors) / len(scale_factors))
-
-            if hot_sel is not None:
-                all_idx_for_comp = hot_sel.get(comp, [])
-                if isinstance(all_idx_for_comp, list) and i < len(all_idx_for_comp):
-                    idx = all_idx_for_comp[i]
-                else:
-                    idx = torch.empty(0, dtype=torch.long)
-                if not isinstance(idx, torch.Tensor):
-                    idx = torch.as_tensor(idx, dtype=torch.long)
-                idx = idx.to(WA.device)
-                rec_i["neuron_select"] = {"num_selected": int(idx.numel())}
-            else:
-                idx = None
-
-            if use_hot_as_residual:
-                W_hot = WA.detach().clone()
-                if idx is None:
-                    W_hot.add_(W_delta, alpha=hot_residual_scale)
-                elif idx.numel() > 0:
-                    if comp in ["Q", "K", "V"]:
-                        valid = idx[(idx >= 0) & (idx < W_hot.size(0))]
-                        W_hot[valid] = W_hot[valid] + hot_residual_scale * W_delta[valid]
-                    else:
-                        valid = idx[(idx >= 0) & (idx < W_hot.size(1))]
-                        W_hot[:, valid] = W_hot[:, valid] + hot_residual_scale * W_delta[:, valid]
-                _attach_hot_residual_to_linear(linA, W_res=W_hot, b_res=None, alpha=alpha)
-            else:
-                if idx is None:
-                    WA.add_(W_delta, alpha=alpha * hot_residual_scale)
-                elif idx.numel() > 0:
-                    if comp in ["Q", "K", "V"]:
-                        valid = idx[(idx >= 0) & (idx < WA.size(0))]
-                        WA[valid] = WA[valid] + alpha * hot_residual_scale * W_delta[valid]
-                    else:
-                        valid = idx[(idx >= 0) & (idx < WA.size(1))]
-                        WA[:, valid] = WA[:, valid] + alpha * hot_residual_scale * W_delta[:, valid]
-
-            del WA_work, U_A, S_A, Vh_A, spectrum_accum, W_delta
-            if attn_dev.type == "cuda":
-                torch.cuda.empty_cache()
-            comp_rep["layers"].append(rec_i)
-
-        report["components"][comp] = comp_rep
-
-    print("[Done] Attention-only SVD spectral fusion completed.")
-    return report
-
-
 # ============================================================
 # Top Neuron Replacement (replace "non-transferred TOP" slices into clean basemodelA)
 # ============================================================
@@ -1605,13 +1295,6 @@ if __name__ == "__main__":
         default="<path_to_hot_dir>",
         help="Directory containing hot_{Q,K,V,O}.pt and hot_{Q,K,V,O}_pre.pt",
     )
-    parser.add_argument(
-        "--fusion_method",
-        type=str,
-        default="hot",
-        choices=["hot", "svd"],
-        help="hot: original HOT P/Q fusion; svd: use HOT P only and replace layer-inner Q with SVD spectral injection.",
-    )
     parser.add_argument("--alpha", type=float, default=0.1)
     parser.add_argument("--lm_only", action="store_true")
     parser.add_argument("--no_lm_only", dest="lm_only", action="store_false")
@@ -1630,14 +1313,6 @@ if __name__ == "__main__":
     parser.add_argument("--q_topr_col", type=int, default=128)
     parser.add_argument("--q_threshold", type=float, default=0.0)
     parser.add_argument("--q_sinkhorn_iters", type=int, default=5)
-    parser.add_argument(
-        "--svd_scale_mode",
-        type=str,
-        default="match_l2",
-        choices=["match_l2", "match_mean", "match_max", "none"],
-        help="How to rescale B singular values onto A's spectrum in --fusion_method svd.",
-    )
-
     # Low-memory Attention control
     parser.add_argument(
         "--attn_device",
@@ -1663,7 +1338,7 @@ if __name__ == "__main__":
         dest="use_hot_residual",
         action="store_true",
         default=True,
-        help="Use HOT/SVD contribution as fixed residual buffer instead of directly modifying modelA weights.",
+        help="Use the HOT contribution as a fixed residual buffer instead of directly modifying modelA weights.",
     )
     parser.add_argument(
         "--no_hot_residual",
@@ -1804,7 +1479,7 @@ if __name__ == "__main__":
 
     # 3) Fusion
     print(
-        f"[Fuse] method = {args.fusion_method} | HOT dir = {args.hot_dir} | alpha = {args.alpha} | lm_only = {args.lm_only}"
+        f"[Fuse] method = hot | HOT dir = {args.hot_dir} | alpha = {args.alpha} | lm_only = {args.lm_only}"
     )
     print(
         f"[Fuse] Low-memory attention: device={args.attn_device}, max_mem_mb={args.attn_max_mem_mb}, autocast={not args.attn_no_autocast}"
@@ -1820,41 +1495,26 @@ if __name__ == "__main__":
 
     try:
         with torch.no_grad():
-            if args.fusion_method == "svd":
-                report = fuse_attention_only_from_hot_dir_svd(
-                    modelA=modelA,
-                    modelB=modelB,
-                    hot_dir=args.hot_dir,
-                    alpha=args.alpha,
-                    use_language_model_only=args.lm_only,
-                    verbose=args.verbose,
-                    attn_device=args.attn_device,
-                    use_hot_as_residual=args.use_hot_residual,
-                    hot_residual_scale=args.hot_residual_scale,
-                    hot_neuron_select_dir=args.hot_neuron_dir,
-                    svd_scale_mode=args.svd_scale_mode,
-                )
-            else:
-                report = fuse_attention_only_from_hot_dir(
-                    modelA=modelA,
-                    modelB=modelB,
-                    hot_dir=args.hot_dir,
-                    alpha=args.alpha,
-                    use_language_model_only=args.lm_only,
-                    verbose=args.verbose,
-                    p_topk=args.p_topk,
-                    p_threshold=args.p_threshold,
-                    q_topr_row=args.q_topr_row,
-                    q_topr_col=args.q_topr_col,
-                    q_threshold=args.q_threshold,
-                    q_sinkhorn_iters=args.q_sinkhorn_iters,
-                    attn_device=args.attn_device,
-                    attn_max_mem_mb=args.attn_max_mem_mb,
-                    attn_autocast=(not args.attn_no_autocast),
-                    use_hot_as_residual=args.use_hot_residual,
-                    hot_residual_scale=args.hot_residual_scale,
-                    hot_neuron_select_dir=args.hot_neuron_dir,
-                )
+            report = fuse_attention_only_from_hot_dir(
+                modelA=modelA,
+                modelB=modelB,
+                hot_dir=args.hot_dir,
+                alpha=args.alpha,
+                use_language_model_only=args.lm_only,
+                verbose=args.verbose,
+                p_topk=args.p_topk,
+                p_threshold=args.p_threshold,
+                q_topr_row=args.q_topr_row,
+                q_topr_col=args.q_topr_col,
+                q_threshold=args.q_threshold,
+                q_sinkhorn_iters=args.q_sinkhorn_iters,
+                attn_device=args.attn_device,
+                attn_max_mem_mb=args.attn_max_mem_mb,
+                attn_autocast=(not args.attn_no_autocast),
+                use_hot_as_residual=args.use_hot_residual,
+                hot_residual_scale=args.hot_residual_scale,
+                hot_neuron_select_dir=args.hot_neuron_dir,
+            )
     except Exception as e:
         print(f"[Error] Fusion failed: {e}", file=sys.stderr)
         sys.exit(1)
