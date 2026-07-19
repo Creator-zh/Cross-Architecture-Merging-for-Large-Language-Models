@@ -25,6 +25,7 @@ from core.dfop.task_presets import (  # noqa: E402
     dfop_sft_run_name,
     get_task_preset,
 )
+from core.dfop.config import ROUTE_GROUPINGS, ROUTE_SOLVERS  # noqa: E402
 
 
 def _csv(value: str) -> list[str]:
@@ -68,6 +69,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
     parser.add_argument("--top-source-layers", type=int, default=2)
+    parser.add_argument(
+        "--route-solver", choices=ROUTE_SOLVERS, default="row_softmax_topk"
+    )
+    parser.add_argument(
+        "--route-grouping", choices=ROUTE_GROUPINGS, default="independent"
+    )
     parser.add_argument("--sft-train-mode", choices=("full", "lora"), default="full")
     parser.add_argument("--sft-profile", choices=("declared", "legacy"), default="declared")
     parser.add_argument("--scope", choices=("primary", "extended", "all"), default="primary")
@@ -122,6 +129,8 @@ def _dfop_model_path(
         args.track,
         args.rank,
         args.top_source_layers,
+        route_solver=args.route_solver,
+        route_grouping=args.route_grouping,
     )
     return (args.results_root / run_name / "fused_model").resolve()
 
@@ -160,7 +169,13 @@ def _model_for_variant(
         return (
             args.sft_results_root
             / dfop_sft_run_name(
-                task, args.mode, args.track, args.rank, args.top_source_layers
+                task,
+                args.mode,
+                args.track,
+                args.rank,
+                args.top_source_layers,
+                route_solver=args.route_solver,
+                route_grouping=args.route_grouping,
             )
             / f"{args.sft_train_mode}_{args.sft_profile}"
         ).resolve()

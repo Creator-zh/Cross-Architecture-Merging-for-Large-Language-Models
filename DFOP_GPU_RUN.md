@@ -1,6 +1,33 @@
 # DF-OT-Procrustes GPU 运行指南
 
-本文档对应 `core/dfop/` 与 `scripts/run_dfop_fusion.py` 的当前实现。主流程只读取两个模型的配置和权重，不加载 tokenizer、数据集或输入张量，也不调用模型 `forward`。Q/K/V/O/Gate/Up/Down 分别使用严格平衡的外层 OT 路由：目标边缘为 `1/L`，源边缘为 `1/M`，并使用 SciPy HiGHS 求解稀疏的精确线性运输问题。
+本文档对应 `core/dfop/` 与 `scripts/run_dfop_fusion.py` 的当前实现。主流程只读取两个模型的配置和权重，不加载 tokenizer、数据集或输入张量，也不调用模型 `forward`。外层路由支持两种求解器：行 softmax 后 top-k，以及使用 SciPy HiGHS 的精确严格平衡 OT；也支持七算子独立路由，或 QK、VO、FFN 三组共享路由。
+
+当前三组共享实验仍分别计算 Q/K/V/O/Gate/Up/Down 的原始跨模型层代价。为消除不同算子的代价尺度差异，对算子 $c$ 使用全矩阵中位数与 MAD 标准化：
+
+$$
+\widehat C^c
+=
+\frac{C^c-\operatorname{median}(C^c)}
+{\operatorname{median}(|C^c-\operatorname{median}(C^c)|)+\epsilon}.
+$$
+
+若 MAD 退化为零，实现会回退到总体标准差。三组代价为
+
+$$
+C^{QK}=\frac{1}{2}\widehat C^Q+\frac{1}{2}\widehat C^K,
+$$
+
+$$
+C^{VO}=\frac{1}{2}\widehat C^V+\frac{1}{2}\widehat C^O,
+$$
+
+$$
+C^{FFN}=\frac{1}{4}\widehat C^{Gate}
++\frac{1}{4}\widehat C^{Up}
++\frac{1}{2}\widehat C^{Down}.
+$$
+
+因此 $P^Q=P^K=P^{QK}$、$P^V=P^O=P^{VO}$，且 $P^{Gate}=P^{Up}=P^{Down}=P^{FFN}$。FFN 权重使两个 residual-input 投影合计占一半，residual-output 投影占一半；应在实验中与三者等权比较。
 
 ## 1. 本地 CPU 验证
 
@@ -80,8 +107,9 @@ python scripts/run_dfop_fusion.py \
   --svd-oversample 16 \
   --svd-power-iterations 2 \
   --inner-entropy 0.05 \
-  --route-solver balanced_exact \
-  --route-marginal-tolerance 1e-7 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
   --beta 0.05 \
   --trust-ratio 0.10
 ```
@@ -99,6 +127,7 @@ output_dir/
 ├── run_report.json
 ├── diagnostics/
 │   ├── layer_cost_{q,k,v,o,gate,up,down}.pt
+│   ├── route_group_cost_{qk,vo,ffn}.pt
 │   ├── route_dense_{q,k,v,o,gate,up,down}.pt
 │   ├── route_{q,k,v,o,gate,up,down}.pt
 │   ├── route_diagnostics.jsonl
@@ -109,9 +138,50 @@ output_dir/
     └── model-*.safetensors
 ```
 
-`route_dense_*.pt` 与 `route_*.pt` 都保存严格平衡 OT 的实际稀疏路由；保留两个文件名是为了兼容现有诊断读取代码。精确线性 OT 的基本可行解天然稀疏，因此不再执行会破坏源层边缘约束的逐行 top-k。`run_report.json` 额外记录每个模块的行边缘误差、列边缘误差、支持集大小和每个源层的总路由质量。对于目标 16 层、源 32 层，应满足每行总质量为 1、每列总质量为 0.5。
+使用 `row_softmax_topk` 时，`route_dense_*.pt` 是截断前的行 softmax，`route_*.pt` 是 top-k 后重新逐行归一化的路由。使用 `balanced_exact` 时两者相同，且不再执行会破坏源层边缘约束的逐行 top-k。共享组内各算子的 `route_*.pt` 内容相同，同时保存一次组代价 `route_group_cost_*.pt`。`run_report.json` 记录求解器、分组、行列边缘误差和各组统计量。对于严格平衡 OT 的目标 16 层、源 32 层，应满足每行总质量为 1、每列总质量为 0.5。
 
 严格无数据约束下，脚本不会把 tokenizer 保存进 `fused_model/`。评测时应显式使用目标模型原有 tokenizer；融合模型的输入/输出语义仍由目标架构定义。
+
+### 4.1 严格平衡 OT 的实际操作
+
+对任一算子或共享组的层代价 $C\in\mathbb R^{L\times M}$，令每个目标层携带质量 $a_\ell=1/L$，每个源层携带质量 $b_m=1/M$。求解
+
+$$
+\Pi^*
+=
+\underset{\Pi\ge 0}{\arg\min}
+\sum_{\ell=1}^{L}\sum_{m=1}^{M}C_{\ell m}\Pi_{\ell m},
+$$
+
+满足
+
+$$
+\sum_{m=1}^{M}\Pi_{\ell m}=\frac{1}{L},
+\qquad \ell=1,\ldots,L,
+$$
+
+$$
+\sum_{\ell=1}^{L}\Pi_{\ell m}=\frac{1}{M},
+\qquad m=1,\ldots,M.
+$$
+
+实现把 $LM$ 个耦合元素展平成线性规划变量，用 SciPy `linprog(method="highs")` 精确求解；这里没有熵正则，也没有 Sinkhorn 近似。融合阶段需要每个目标层的源层条件权重，因此再转换为
+
+$$
+P_{\ell m}=\frac{\Pi^*_{\ell m}}{a_\ell}=L\Pi^*_{\ell m}.
+$$
+
+于是
+
+$$
+\sum_{m=1}^{M}P_{\ell m}=1,
+$$
+
+$$
+\sum_{\ell=1}^{L}P_{\ell m}=\frac{L}{M}.
+$$
+
+例如 $L=16,M=32$ 时，每个目标层仍有一单位聚合预算，但每个源层在所有目标层上的总贡献被固定为 $0.5$。这正是它避免所有目标层退化到同一两个源层的机制。精确线性 OT 的最优基本可行解通常很稀疏，非退化情形至多有 $L+M-1$ 个正元素；求解后不能再做逐行 top-k，否则会破坏列边缘约束。启用方式为 `--route-solver balanced_exact`，此时 `--top-source-layers` 不参与求解。
 
 ## 5. 显存与故障定位
 
@@ -144,7 +214,7 @@ python scripts/download_models.py \
   --models-root ./models
 ```
 
-使用三张 A100 同时运行七模块、universal track 主配置：
+当前 QK/VO/FFN 共享实验先使用行 softmax top-1 和 top-2，不启用严格平衡 OT。先运行 top-1：
 
 ```bash
 python scripts/run_dfop_tasks.py \
@@ -155,10 +225,13 @@ python scripts/run_dfop_tasks.py \
   --mode full \
   --track universal \
   --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 1 \
   --trust-ratio 0.10
 ```
 
-如果服务器保留了旧版 top-2 实验由同一模型、rank 和阶段一参数生成的完整层代价缓存，可以只复用阶段一并重新计算严格平衡路由及阶段二：
+top-1 完成后，再运行 top-2：
 
 ```bash
 python scripts/run_dfop_tasks.py \
@@ -169,11 +242,13 @@ python scripts/run_dfop_tasks.py \
   --mode full \
   --track universal \
   --rank 128 \
-  --trust-ratio 0.10 \
-  --reuse-legacy-top2-stage1-cache
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
+  --trust-ratio 0.10
 ```
 
-该开关读取 `cache/<task>_full_r128_top2/stage1`，但严格平衡实验使用新的 `balanced` 阶段二缓存和输出目录。阶段一代价与旧 top-2 路由参数无关，因此这种复用不会混入旧路由；manifest 不匹配时程序仍会拒绝加载。
+两次实验应顺序运行。它们自动复用 `cache/stage1/<task>_full_r128` 中与路由无关的七个原始代价矩阵，而将路由和层对传输分别保存到以完整运行名隔离的 `cache/stage2/` 目录。不要让两个独立启动器同时写同一个阶段一缓存。输出目录分别为 `<task>_full_universal_r128_top1_qk_vo_ffn_beta0.05` 与 `<task>_full_universal_r128_top2_qk_vo_ffn_beta0.05`。
 
 `universal` 对三个任务固定使用 `beta=0.05`。`matched` 则使用原 Transport and Merge 融合阶段的任务参数：medical 0.03、Thai 0.01、Malay 0.10。主结果应先报告 universal track，matched track 作为对照：
 
@@ -183,7 +258,10 @@ python scripts/run_dfop_tasks.py \
   --gpus 0,1,2 \
   --models-root ./models \
   --mode full \
-  --track matched
+  --track matched \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2
 ```
 
 任务中断后使用完全相同的模型与数学配置，并添加 `--resume`：
@@ -195,20 +273,29 @@ python scripts/run_dfop_tasks.py \
   --models-root ./models \
   --mode full \
   --track universal \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
   --resume
 ```
 
 阶段一每完成一个 `q/k/v/o/gate/up/down` 模块便原子保存 `layer_cost_*.pt`。恢复时，manifest 中的模型标识、矩阵形状、rank、SVD、谱点和 OT 参数必须完全一致；不一致时程序拒绝误用缓存。
 
-由于七模块分别计算路由并只更新各自权重，attention-only checkpoint 可以从 full checkpoint 精确派生：保留 Q/K/V/O，恢复原目标模型的 gate/up/down。该操作不需要重新计算任何 OT：
+由于七模块仍分别计算和写入各自的权重更新，attention-only checkpoint 可以从 full checkpoint 精确派生：保留 Q/K/V/O，恢复原目标模型的 gate/up/down。该操作不需要重新计算任何 OT。下面派生 top-1：
 
 ```bash
 python scripts/derive_dfop_attn_tasks.py \
   --tasks medical,thai,malay \
   --models-root ./models \
   --results-root ./transport_results/dfop \
-  --track universal
+  --track universal \
+  --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 1
 ```
+
+对 top-2 再执行一次相同命令，并把 `--top-source-layers` 改为 `2`。派生 checkpoint 保留同一次 full 运行的 Q/K/V/O 更新并恢复原目标模型 FFN，因此是精确的 FFN 开关消融。
 
 单元测试同时直接运行了 attention-only 流程，并验证派生 checkpoint 与直接结果逐权重一致。`run_dfop_tasks.py --mode attn` 仍保留为独立复核路径。
 
@@ -257,6 +344,9 @@ python scripts/run_dfop_tasks.py \
   --mode full \
   --track universal \
   --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
   --trust-ratio 0.10
 ```
 
@@ -268,7 +358,10 @@ python scripts/derive_dfop_attn_tasks.py \
   --models-root ./models \
   --results-root ./transport_results/dfop \
   --track universal \
-  --rank 128
+  --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2
 ```
 
 7 张 A100 上可让 T&M 使用 0–2、DFOP 使用 3–5 同时运行，保留第 6 张卡做监控或短测。若共享文件系统吞吐成为瓶颈，则先跑 T&M，再跑 DFOP；这不会改变结果。
@@ -294,9 +387,12 @@ python scripts/evaluate_dfop_tasks.py \
   --gpus 0,1,2,3,4,5,6 \
   --models-root ./models \
   --results-root ./transport_results/dfop \
-  --eval-root ./evaluation_results/merge_only \
+  --eval-root ./evaluation_results/qk_vo_ffn_top2 \
   --track universal \
   --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
   --scope primary \
   --lm-eval-repo /path/to/lm-evaluation-harness \
   --malay-repo /path/to/complete/MalayMMLU \
@@ -321,6 +417,9 @@ python scripts/evaluate_dfop_tasks.py \
   --eval-root ./evaluation_results/merge_only_thai_extended \
   --track universal \
   --rank 128 \
+  --route-solver row_softmax_topk \
+  --route-grouping qk_vo_ffn \
+  --top-source-layers 2 \
   --scope extended \
   --lm-eval-repo /path/to/lm-evaluation-harness \
   --external-model thai:hot="$PWD/models/llamathai_fused_alpha01_fortrain_1b_thai_instruction_sft"

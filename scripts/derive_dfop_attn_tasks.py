@@ -17,6 +17,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from core.dfop.module_registry import collect_module_linears  # noqa: E402
+from core.dfop.config import ROUTE_GROUPINGS, ROUTE_SOLVERS  # noqa: E402
 from core.dfop.task_presets import (  # noqa: E402
     TASK_PRESETS,
     dfop_fusion_run_name,
@@ -37,6 +38,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
+    parser.add_argument("--top-source-layers", type=int, default=2)
+    parser.add_argument(
+        "--route-solver", choices=ROUTE_SOLVERS, default="row_softmax_topk"
+    )
+    parser.add_argument(
+        "--route-grouping", choices=ROUTE_GROUPINGS, default="independent"
+    )
     parser.add_argument("--model-dtype", choices=("auto", "bfloat16", "float16"), default="auto")
     parser.add_argument("--overwrite-output", action="store_true")
     return parser
@@ -73,10 +81,24 @@ def _derive_one(args: argparse.Namespace, task: str) -> dict:
     preset = get_task_preset(task)
     beta = 0.05 if args.track == "universal" else preset.matched_beta
     full_name = dfop_fusion_run_name(
-        task, "full", args.track, args.rank, beta
+        task,
+        "full",
+        args.track,
+        args.rank,
+        args.top_source_layers,
+        beta,
+        route_solver=args.route_solver,
+        route_grouping=args.route_grouping,
     )
     attn_name = dfop_fusion_run_name(
-        task, "attn", args.track, args.rank, beta
+        task,
+        "attn",
+        args.track,
+        args.rank,
+        args.top_source_layers,
+        beta,
+        route_solver=args.route_solver,
+        route_grouping=args.route_grouping,
     )
     full_model_path = (args.results_root / full_name / "fused_model").resolve()
     original_path = (args.models_root / preset.target_local_dir).resolve()

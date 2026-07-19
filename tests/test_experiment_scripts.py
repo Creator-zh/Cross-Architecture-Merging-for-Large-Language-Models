@@ -25,6 +25,31 @@ class DFOPPathNamingTests(unittest.TestCase):
             "malay_attn_universal_r128_top1",
         )
 
+    def test_grouped_and_balanced_names_do_not_collide(self):
+        self.assertEqual(
+            dfop_fusion_run_name(
+                "medical",
+                "full",
+                "universal",
+                128,
+                2,
+                route_grouping="qk_vo_ffn",
+            ),
+            "medical_full_universal_r128_top2_qk_vo_ffn_beta0.05",
+        )
+        self.assertEqual(
+            dfop_fusion_run_name(
+                "medical",
+                "full",
+                "universal",
+                128,
+                2,
+                route_solver="balanced_exact",
+                route_grouping="qk_vo_ffn",
+            ),
+            "medical_full_universal_r128_balanced_qk_vo_ffn_beta0.05",
+        )
+
 
 class MalayPostprocessTests(unittest.TestCase):
     def test_prediction_csv_is_converted_to_accuracy_json(self):
@@ -114,6 +139,8 @@ class DFOPTaskLauncherTests(unittest.TestCase):
                         "--results-root",
                         str(results_root),
                         "--dry-run",
+                        "--route-grouping",
+                        "qk_vo_ffn",
                     ]
                 )
 
@@ -121,6 +148,8 @@ class DFOPTaskLauncherTests(unittest.TestCase):
             self.assertEqual(popen.call_count, 1)
             manifest = json.loads((results_root / "launch_manifest.json").read_text(encoding="utf-8"))
             self.assertEqual(manifest["tasks"], ["medical"])
+            self.assertEqual(manifest["route_grouping"], "qk_vo_ffn")
+            self.assertIn("--route-grouping", manifest["commands"][0])
             self.assertEqual(manifest["commands"][0][0], popen.call_args.args[0][0])
 
 

@@ -20,6 +20,7 @@ from .lora_export import exact_lora_factors
 from .module_registry import MODULE_SPECS, collect_module_linears, common_rank_limit
 from .ot_procrustes import solve_ot_procrustes
 from .pair_core import COUPLING_MARGINAL_TOLERANCE, compute_pair_core
+from .route_groups import aggregate_group_cost, build_route_groups
 from .sinkhorn import uniform_mass
 from .spectral_points import build_spectral_points
 from .svd_cache import compute_svd_record
@@ -326,6 +327,7 @@ def run_dfop_pipeline(
     dense_routes: Dict[str, torch.Tensor] = {}
     routes: Dict[str, torch.Tensor] = {}
     route_diagnostics: List[dict] = []
+    route_group_diagnostics: Dict[str, dict] = {}
     for module_name in config.modules:
         expected_shape = (
             len(target_records[module_name]),
@@ -380,39 +382,71 @@ def run_dfop_pipeline(
             cost = cost_result.cost.detach().cpu()
             if cache_path is not None:
                 _save_tensor_atomic(cost, cache_path)
-        route_result = compute_layer_route(cost, config.route)
         layer_costs[module_name] = cost
-        dense_routes[module_name] = route_result.dense_route.cpu()
-        routes[module_name] = route_result.route.cpu()
-        LOGGER.info(
-            "Layer route complete module=%s mean_entropy=%.6f",
-            module_name,
-            float(route_result.entropy.mean()),
-        )
-        for layer_index in range(cost.shape[0]):
-            nonzero = torch.nonzero(route_result.route[layer_index] > 0, as_tuple=False).flatten()
-            route_diagnostics.append(
-                {
-                    "module": module_name,
-                    "target_layer": layer_index,
-                    "route_entropy": float(route_result.entropy[layer_index]),
-                    "effective_source_count": float(
-                        route_result.effective_source_count[layer_index]
-                    ),
-                    "selected_source_layers": nonzero.tolist(),
-                    "selected_weights": route_result.route[layer_index, nonzero].tolist(),
-                }
-            )
         if diagnostics_output is not None:
             _save_tensor_atomic(cost, diagnostics_output / f"layer_cost_{module_name}.pt")
+        _empty_cuda_cache(device)
+
+    route_groups = build_route_groups(config.modules, config.route.grouping)
+    for group_name, group_modules in route_groups.items():
+        group_cost = aggregate_group_cost(group_name, group_modules, layer_costs)
+        route_result = compute_layer_route(group_cost, config.route)
+        LOGGER.info(
+            "Layer route complete group=%s modules=%s solver=%s mean_entropy=%.6f",
+            group_name,
+            ",".join(group_modules),
+            route_result.solver,
+            float(route_result.entropy.mean()),
+        )
+        route_group_diagnostics[group_name] = {
+            "modules": list(group_modules),
+            "solver": route_result.solver,
+            "row_marginal_error": route_result.row_marginal_error,
+            "column_marginal_error": route_result.column_marginal_error,
+            "transport_objective": route_result.transport_objective,
+            "mean_entropy": float(route_result.entropy.mean()),
+            "mean_effective_source_count": float(
+                route_result.effective_source_count.mean()
+            ),
+        }
+        if diagnostics_output is not None:
             _save_tensor_atomic(
-                route_result.dense_route,
-                diagnostics_output / f"route_dense_{module_name}.pt",
+                group_cost,
+                diagnostics_output / f"route_group_cost_{group_name}.pt",
             )
-            _save_tensor_atomic(
-                route_result.route,
-                diagnostics_output / f"route_{module_name}.pt",
-            )
+        for module_name in group_modules:
+            dense_routes[module_name] = route_result.dense_route.cpu().clone()
+            routes[module_name] = route_result.route.cpu().clone()
+            for layer_index in range(group_cost.shape[0]):
+                nonzero = torch.nonzero(
+                    route_result.route[layer_index] > 0, as_tuple=False
+                ).flatten()
+                route_diagnostics.append(
+                    {
+                        "module": module_name,
+                        "route_group": group_name,
+                        "shared_modules": list(group_modules),
+                        "solver": route_result.solver,
+                        "target_layer": layer_index,
+                        "route_entropy": float(route_result.entropy[layer_index]),
+                        "effective_source_count": float(
+                            route_result.effective_source_count[layer_index]
+                        ),
+                        "selected_source_layers": nonzero.tolist(),
+                        "selected_weights": route_result.route[
+                            layer_index, nonzero
+                        ].tolist(),
+                    }
+                )
+            if diagnostics_output is not None:
+                _save_tensor_atomic(
+                    route_result.dense_route,
+                    diagnostics_output / f"route_dense_{module_name}.pt",
+                )
+                _save_tensor_atomic(
+                    route_result.route,
+                    diagnostics_output / f"route_{module_name}.pt",
+                )
         _empty_cuda_cache(device)
     route_finished = time.perf_counter()
 
@@ -592,6 +626,9 @@ def run_dfop_pipeline(
         "target_layers": {name: len(target_linears[name]) for name in config.modules},
         "source_layers": {name: len(source_linears[name]) for name in config.modules},
         "rank_by_module": rank_by_module,
+        "route_solver": config.route.solver,
+        "route_grouping": config.route.grouping,
+        "route_groups": route_group_diagnostics,
         "compute_device": str(device),
         "apply_updates": apply_updates,
         "collected_low_rank_updates": collect_low_rank_updates,

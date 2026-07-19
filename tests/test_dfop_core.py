@@ -27,6 +27,7 @@ from core.dfop.ot_procrustes import solve_ot_procrustes
 from core.dfop.pipeline import _solve_pair_transport, run_dfop_pipeline
 from core.dfop.module_registry import collect_module_linears
 from core.dfop.pair_core import compute_pair_core
+from core.dfop.route_groups import aggregate_group_cost, build_route_groups
 from core.dfop.sinkhorn import log_sinkhorn, uniform_mass
 from core.dfop.spectral_points import build_spectral_points, weighted_mean_energy
 from core.dfop.svd_cache import exact_svd
@@ -158,10 +159,45 @@ class OTProcrustesTests(unittest.TestCase):
 class RouteTests(unittest.TestCase):
     def test_route_is_row_normalized_and_topk_sparse(self):
         cost = torch.tensor([[0.1, 0.5, 0.2], [0.8, 0.3, 0.4]])
-        result = compute_layer_route(cost, RouteConfig(temperature=0.1, top_source_layers=2))
+        result = compute_layer_route(
+            cost,
+            RouteConfig(
+                solver="row_softmax_topk",
+                temperature=0.1,
+                top_source_layers=2,
+            ),
+        )
         self.assertTrue(torch.allclose(result.route.sum(1), torch.ones(2)))
         self.assertTrue(torch.equal((result.route > 0).sum(1), torch.tensor([2, 2])))
         self.assertFalse(torch.allclose(result.route.sum(0), torch.full((3,), 2 / 3)))
+
+    def test_balanced_exact_satisfies_both_uniform_marginals(self):
+        cost = torch.tensor([[0.0, 1.0, 2.0, 3.0], [3.0, 2.0, 1.0, 0.0]])
+        result = compute_layer_route(
+            cost, RouteConfig(solver="balanced_exact", marginal_tolerance=1e-8)
+        )
+        self.assertTrue(torch.allclose(result.route.sum(1), torch.ones(2)))
+        self.assertTrue(
+            torch.allclose(result.route.sum(0), torch.full((4,), 0.5))
+        )
+        self.assertLessEqual(result.row_marginal_error, 1e-8)
+        self.assertLessEqual(result.column_marginal_error, 1e-8)
+
+    def test_qk_vo_ffn_groups_and_aggregates_separately(self):
+        groups = build_route_groups(
+            ("q", "k", "v", "o", "gate", "up", "down"), "qk_vo_ffn"
+        )
+        self.assertEqual(groups["qk"], ("q", "k"))
+        self.assertEqual(groups["vo"], ("v", "o"))
+        self.assertEqual(groups["ffn"], ("gate", "up", "down"))
+        costs = {
+            "gate": torch.tensor([[0.0, 1.0], [2.0, 3.0]]),
+            "up": torch.tensor([[0.0, 10.0], [20.0, 30.0]]),
+            "down": torch.tensor([[3.0, 2.0], [1.0, 0.0]]),
+        }
+        grouped = aggregate_group_cost("ffn", groups["ffn"], costs)
+        self.assertEqual(tuple(grouped.shape), (2, 2))
+        self.assertTrue(torch.isfinite(grouped).all())
 
 
 class LayerCostCheckpointTests(unittest.TestCase):
@@ -346,7 +382,12 @@ class PipelineTests(unittest.TestCase):
                 max_alternating_iterations=3,
                 restarts=1,
             ),
-            route=RouteConfig(temperature=0.2, top_source_layers=1),
+            route=RouteConfig(
+                solver="row_softmax_topk",
+                grouping="qk_vo_ffn",
+                temperature=0.2,
+                top_source_layers=1,
+            ),
             fusion=FusionConfig(beta=0.1, trust_ratio=0.2),
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -370,9 +411,14 @@ class PipelineTests(unittest.TestCase):
                 )
                 self.assertTrue(
                     torch.equal(
-                        (result.routes[module_name] > 0).sum(1), torch.ones(2, dtype=torch.long)
+                        (result.routes[module_name] > 0).sum(1),
+                        torch.ones(2, dtype=torch.long),
                     )
                 )
+            self.assertTrue(torch.equal(result.routes["q"], result.routes["k"]))
+            self.assertTrue(torch.equal(result.routes["v"], result.routes["o"]))
+            self.assertTrue(torch.equal(result.routes["gate"], result.routes["up"]))
+            self.assertTrue(torch.equal(result.routes["gate"], result.routes["down"]))
             self.assertFalse(
                 torch.equal(before, target.layers[0].self_attn.q_proj.weight)
             )
@@ -433,7 +479,11 @@ class PipelineTests(unittest.TestCase):
                 max_alternating_iterations=2,
                 restarts=1,
             ),
-            route=RouteConfig(temperature=0.2, top_source_layers=1),
+            route=RouteConfig(
+                solver="row_softmax_topk",
+                temperature=0.2,
+                top_source_layers=1,
+            ),
             fusion=FusionConfig(beta=0.1, trust_ratio=0.2),
         )
         run_dfop_pipeline(full_target, full_source, config, compute_device="cpu")

@@ -22,6 +22,7 @@ from core.dfop.task_presets import (  # noqa: E402
     fusion_beta,
     get_task_preset,
 )
+from core.dfop.config import ROUTE_GROUPINGS, ROUTE_SOLVERS  # noqa: E402
 
 
 def _csv(value: str) -> list[str]:
@@ -46,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--rank", type=int, default=128)
     parser.add_argument("--top-source-layers", type=int, default=2)
+    parser.add_argument(
+        "--route-solver", choices=ROUTE_SOLVERS, default="row_softmax_topk"
+    )
+    parser.add_argument(
+        "--route-grouping", choices=ROUTE_GROUPINGS, default="independent"
+    )
     parser.add_argument("--trust-ratio", default="0.10")
     parser.add_argument("--model-dtype", default="bfloat16")
     parser.add_argument("--resume", action="store_true")
@@ -91,14 +98,20 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
     modules = "q,k,v,o" if args.mode == "attn" else "q,k,v,o,gate,up,down"
     beta = fusion_beta(args.track, task_name)
     run_name = dfop_fusion_run_name(
-        task_name, args.mode, args.track, args.rank, args.top_source_layers, beta
+        task_name,
+        args.mode,
+        args.track,
+        args.rank,
+        args.top_source_layers,
+        beta,
+        route_solver=args.route_solver,
+        route_grouping=args.route_grouping,
     )
     output = (args.results_root / run_name).resolve()
-    shared_cache = (
-        args.results_root
-        / "cache"
-        / f"{task_name}_{args.mode}_r{args.rank}_top{args.top_source_layers}"
+    stage1_cache = (
+        args.results_root / "cache" / "stage1" / f"{task_name}_{args.mode}_r{args.rank}"
     ).resolve()
+    stage2_cache = (args.results_root / "cache" / "stage2" / run_name).resolve()
     command = [
         sys.executable,
         str(REPOSITORY_ROOT / "scripts" / "run_dfop_fusion.py"),
@@ -109,9 +122,9 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
         "--output-dir",
         str(output),
         "--stage1-cache-dir",
-        str(shared_cache / "stage1"),
+        str(stage1_cache),
         "--stage2-cache-dir",
-        str(shared_cache / "stage2"),
+        str(stage2_cache),
         "--device",
         "cuda:0",
         "--model-dtype",
@@ -122,6 +135,10 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
         str(args.rank),
         "--top-source-layers",
         str(args.top_source_layers),
+        "--route-solver",
+        args.route_solver,
+        "--route-grouping",
+        args.route_grouping,
         "--beta",
         str(beta),
         "--trust-ratio",
@@ -158,6 +175,8 @@ def main(argv: list[str] | None = None) -> int:
         "track": args.track,
         "rank": args.rank,
         "top_source_layers": args.top_source_layers,
+        "route_solver": args.route_solver,
+        "route_grouping": args.route_grouping,
         "commands": [command for command, _, _ in jobs],
     }
     (args.results_root / "launch_manifest.json").write_text(
@@ -170,7 +189,10 @@ def main(argv: list[str] | None = None) -> int:
         for command, task, gpu in jobs:
             log_path = (
                 log_root
-                / f"{task}_{args.mode}_{args.track}_top{args.top_source_layers}.log"
+                / (
+                    f"{task}_{args.mode}_{args.track}_{args.route_solver}_"
+                    f"top{args.top_source_layers}_{args.route_grouping}.log"
+                )
             )
             log_file = log_path.open("a" if args.resume else "w", encoding="utf-8")
             opened_logs.append(log_file)

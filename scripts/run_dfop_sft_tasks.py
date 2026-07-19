@@ -22,6 +22,7 @@ from core.dfop.task_presets import (  # noqa: E402
     dfop_sft_run_name,
     get_task_preset,
 )
+from core.dfop.config import ROUTE_GROUPINGS, ROUTE_SOLVERS  # noqa: E402
 
 
 def _csv(value: str) -> list[str]:
@@ -46,6 +47,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
     parser.add_argument("--top-source-layers", type=int, default=2)
+    parser.add_argument(
+        "--route-solver", choices=ROUTE_SOLVERS, default="row_softmax_topk"
+    )
+    parser.add_argument(
+        "--route-grouping", choices=ROUTE_GROUPINGS, default="independent"
+    )
     parser.add_argument("--train-mode", choices=("full", "lora"), default="full")
     parser.add_argument(
         "--profile",
@@ -71,7 +78,13 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _fusion_model(args: argparse.Namespace, task: str) -> Path:
     name = dfop_fusion_run_name(
-        task, args.mode, args.track, args.rank, args.top_source_layers
+        task,
+        args.mode,
+        args.track,
+        args.rank,
+        args.top_source_layers,
+        route_solver=args.route_solver,
+        route_grouping=args.route_grouping,
     )
     return (args.fusion_results_root / name / "fused_model").resolve()
 
@@ -89,7 +102,13 @@ def _command(args: argparse.Namespace, task: str) -> tuple[list[str], Path]:
     output = (
         args.sft_results_root
         / dfop_sft_run_name(
-            task, args.mode, args.track, args.rank, args.top_source_layers
+            task,
+            args.mode,
+            args.track,
+            args.rank,
+            args.top_source_layers,
+            route_solver=args.route_solver,
+            route_grouping=args.route_grouping,
         )
         / f"{args.train_mode}_{args.profile}"
     ).resolve()
@@ -175,6 +194,8 @@ def main(argv: list[str] | None = None) -> int:
         "train_mode": args.train_mode,
         "profile": args.profile,
         "top_source_layers": args.top_source_layers,
+        "route_solver": args.route_solver,
+        "route_grouping": args.route_grouping,
         "commands": [command for (command, _), _, _ in jobs],
     }
     (args.sft_results_root / "sft_launch_manifest.json").write_text(
@@ -192,7 +213,10 @@ def main(argv: list[str] | None = None) -> int:
             output.mkdir(parents=True, exist_ok=True)
             log_path = (
                 log_root
-                / f"{task}_{args.mode}_{args.train_mode}_{args.profile}_top{args.top_source_layers}.log"
+                / (
+                    f"{task}_{args.mode}_{args.train_mode}_{args.profile}_"
+                    f"top{args.top_source_layers}_{args.route_grouping}.log"
+                )
             )
             log_file = log_path.open("a" if args.resume else "w", encoding="utf-8")
             logs.append(log_file)

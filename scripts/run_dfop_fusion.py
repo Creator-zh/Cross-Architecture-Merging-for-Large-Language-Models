@@ -25,6 +25,8 @@ if str(REPOSITORY_ROOT) not in sys.path:
 
 from core.dfop.config import (  # noqa: E402
     MODULE_TYPES,
+    ROUTE_GROUPINGS,
+    ROUTE_SOLVERS,
     CoreScaleConfig,
     DFOPConfig,
     FusionConfig,
@@ -135,6 +137,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--restarts", type=int, default=2)
     parser.add_argument("--route-temperature", type=float, default=0.05)
     parser.add_argument(
+        "--route-solver",
+        choices=ROUTE_SOLVERS,
+        default="row_softmax_topk",
+        help="Strict balanced transport or the legacy row-softmax top-k router",
+    )
+    parser.add_argument(
+        "--route-grouping",
+        choices=ROUTE_GROUPINGS,
+        default="independent",
+        help="Share routes within QK, VO, and FFN while retaining per-module costs",
+    )
+    parser.add_argument("--route-marginal-tolerance", type=float, default=1e-7)
+    parser.add_argument("--route-support-tolerance", type=float, default=1e-9)
+    parser.add_argument(
         "--top-source-layers",
         type=_optional_positive_int,
         default=2,
@@ -237,8 +253,12 @@ def _build_config(args: argparse.Namespace) -> DFOPConfig:
             seed=args.seed,
         ),
         route=RouteConfig(
+            solver=args.route_solver,
+            grouping=args.route_grouping,
             temperature=args.route_temperature,
             top_source_layers=args.top_source_layers,
+            marginal_tolerance=args.route_marginal_tolerance,
+            support_tolerance=args.route_support_tolerance,
         ),
         core_scale=CoreScaleConfig(
             enabled=not args.disable_core_scale,

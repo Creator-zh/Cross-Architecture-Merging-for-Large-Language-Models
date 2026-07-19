@@ -71,6 +71,10 @@ class LayerRouteResult:
     selected_mask: Optional[Tensor]
     entropy: Tensor
     effective_source_count: Tensor
+    row_marginal_error: float
+    column_marginal_error: float
+    transport_objective: float
+    solver: str
 
 
 @dataclass

@@ -102,11 +102,20 @@ def dfop_fusion_run_name(
     rank: int,
     top_source_layers: int,
     beta: float | None = None,
+    *,
+    route_solver: str = "row_softmax_topk",
+    route_grouping: str = "independent",
 ) -> str:
-    """Directory name for a fused DFOP run (includes top-k to avoid collisions)."""
+    """Directory name for a fused DFOP run without route-config collisions."""
     resolved_beta = fusion_beta(track, task) if beta is None else float(beta)
+    route_label = (
+        f"top{int(top_source_layers)}"
+        if route_solver == "row_softmax_topk"
+        else "balanced"
+    )
+    grouping_label = "" if route_grouping == "independent" else f"_{route_grouping}"
     return (
-        f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"
+        f"{task}_{mode}_{track}_r{int(rank)}_{route_label}{grouping_label}"
         f"_beta{resolved_beta:g}"
     )
 
@@ -117,6 +126,15 @@ def dfop_sft_run_name(
     track: str,
     rank: int,
     top_source_layers: int,
+    *,
+    route_solver: str = "row_softmax_topk",
+    route_grouping: str = "independent",
 ) -> str:
     """Directory name for a post-merge SFT run."""
-    return f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"
+    route_label = (
+        f"top{int(top_source_layers)}"
+        if route_solver == "row_softmax_topk"
+        else "balanced"
+    )
+    grouping_label = "" if route_grouping == "independent" else f"_{route_grouping}"
+    return f"{task}_{mode}_{track}_r{int(rank)}_{route_label}{grouping_label}"
