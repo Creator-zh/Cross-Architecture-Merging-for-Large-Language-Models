@@ -1,0 +1,42 @@
+{
+  "argv": [
+    "--target-model",
+    "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/llama3-1b-med",
+    "--source-model",
+    "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/Llama-3.1-8B-Instruct",
+    "--output-dir",
+    "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/transport_results/dfop/medical_attn_universal_r128_top2_beta0.05",
+    "--stage1-cache-dir",
+    "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/transport_results/dfop/cache/medical_attn_r128_top2/stage1",
+    "--stage2-cache-dir",
+    "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/transport_results/dfop/cache/medical_attn_r128_top2/stage2",
+    "--device",
+    "cuda:0",
+    "--model-dtype",
+    "bfloat16",
+    "--modules",
+    "q,k,v,o",
+    "--rank",
+    "128",
+    "--top-source-layers",
+    "2",
+    "--beta",
+    "0.05",
+    "--trust-ratio",
+    "0.10",
+    "--local-files-only",
+    "--copy-target-tokenizer-files",
+    "--overwrite-output"
+  ],
+  "data_free_contract": {
+    "calls_forward": false,
+    "loads_dataset": false,
+    "loads_tokenizer": false
+  },
+  "device": "cuda:0",
+  "dry_run": false,
+  "model_dtype": "bfloat16",
+  "source_model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/Llama-3.1-8B-Instruct",
+  "target_model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/llama3-1b-med",
+  "updates_only": false
+}

@@ -1,0 +1,11 @@
+{
+  "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/sft_results/dfop/malay_attn_universal_r128_top2/full_declared",
+  "prediction_file": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/dfop_attn_pipeline/top2/post_sft/malay/dfop_sft/primary/MalayMMLU_result_full_declared_True_0shot.csv",
+  "results": {
+    "MalayMMLU": {
+      "acc,none": 0.4103167719819931,
+      "correct": 9935,
+      "total": 24213
+    }
+  }
+}

@@ -100,12 +100,13 @@ def dfop_fusion_run_name(
     mode: str,
     track: str,
     rank: int,
+    top_source_layers: int,
     beta: float | None = None,
 ) -> str:
-    """Directory name for a strict-balanced-OT DFOP run."""
+    """Directory name for a fused DFOP run (includes top-k to avoid collisions)."""
     resolved_beta = fusion_beta(track, task) if beta is None else float(beta)
     return (
-        f"{task}_{mode}_{track}_r{int(rank)}_balanced"
+        f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"
         f"_beta{resolved_beta:g}"
     )
 
@@ -115,6 +116,7 @@ def dfop_sft_run_name(
     mode: str,
     track: str,
     rank: int,
+    top_source_layers: int,
 ) -> str:
     """Directory name for a post-merge SFT run."""
-    return f"{task}_{mode}_{track}_r{int(rank)}_balanced"
+    return f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"

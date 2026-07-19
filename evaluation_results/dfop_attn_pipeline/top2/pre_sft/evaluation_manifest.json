@@ -1,0 +1,21 @@
+[
+  {
+    "task": "malay",
+    "variant": "dfop_attn",
+    "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/transport_results/dfop/malay_attn_universal_r128_top2_beta0.05/fused_model",
+    "output": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/dfop_attn_pipeline/top2/pre_sft/malay/dfop_attn/primary",
+    "command": [
+      "/home/ziheng_zhao/miniconda3/envs/lm-eval/bin/python",
+      "src/evaluate.py",
+      "--by_letter",
+      "--shot",
+      "0",
+      "--task",
+      "MalayMMLU",
+      "--base_model",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/transport_results/dfop/malay_attn_universal_r128_top2_beta0.05/fused_model",
+      "--output_folder",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/dfop_attn_pipeline/top2/pre_sft/malay/dfop_attn/primary"
+    ]
+  }
+]

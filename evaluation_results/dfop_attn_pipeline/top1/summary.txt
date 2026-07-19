@@ -1,18 +1,18 @@
 === DFOP attn-only top-1 summary ===
 
 [medical]
-  target: mean=0.4052
-  dfop_attn: mean=0.3587  (Δ=-0.0465)
-  dfop_sft: mean=0.3670   (Δ=-0.0382)
+  target: mean=0.4052 | medmcqa=0.3639, medqa_4options=0.3771, mmlu_anatomy=0.4963, mmlu_clinical_knowledge=0.4340, mmlu_college_biology=0.3819, mmlu_college_medicine=0.2948, mmlu_medical_genetics=0.5000, mmlu_professional_medicine=0.3934
+  dfop_attn: mean=0.3587 | medmcqa=0.3670, medqa_4options=0.3653, mmlu_anatomy=0.4296, mmlu_clinical_knowledge=0.3434, mmlu_college_biology=0.3889, mmlu_college_medicine=0.2543, mmlu_medical_genetics=0.3900, mmlu_professional_medicine=0.3309
+  dfop_sft: mean=0.3670 | medmcqa=0.3727, medqa_4options=0.3700, mmlu_anatomy=0.4741, mmlu_clinical_knowledge=0.3396, mmlu_college_biology=0.3889, mmlu_college_medicine=0.2659, mmlu_medical_genetics=0.3900, mmlu_professional_medicine=0.3346
 
 [thai]
-  target: mean=0.3809
-  dfop_attn: mean=0.3865  (Δ=+0.0056)
-  dfop_sft: mean=0.3879   (Δ=+0.0070)
+  target: mean=0.3809 | xcopa_th=0.5800, xnli_th=0.4518, xquad_th=0.1109
+  dfop_attn: mean=0.3865 | xcopa_th=0.5880, xnli_th=0.4622, xquad_th=0.1092
+  dfop_sft: mean=0.3879 | xcopa_th=0.5740, xnli_th=0.4502, xquad_th=0.1395
 
 [malay]
-  target: MalayMMLU=0.4095
-  dfop_attn: MalayMMLU=0.4011  (Δ=-0.0084)
-  dfop_sft: MalayMMLU=0.3853   (Δ=-0.0242)
+  target: mean=0.4095 | MalayMMLU=0.4095
+  dfop_attn: mean=0.4011 | MalayMMLU=0.4011
+  dfop_sft: mean=0.3853 | MalayMMLU=0.3853
 
 Done.

@@ -11,18 +11,18 @@ from core.dfop.task_presets import dfop_fusion_run_name, dfop_sft_run_name, get_
 
 
 class DFOPPathNamingTests(unittest.TestCase):
-    def test_fusion_and_sft_names_include_balanced_route(self):
+    def test_fusion_and_sft_names_include_top(self):
         self.assertEqual(
-            dfop_fusion_run_name("medical", "attn", "universal", 128),
-            "medical_attn_universal_r128_balanced_beta0.05",
+            dfop_fusion_run_name("medical", "attn", "universal", 128, 1),
+            "medical_attn_universal_r128_top1_beta0.05",
         )
         self.assertEqual(
-            dfop_fusion_run_name("thai", "attn", "universal", 128),
-            "thai_attn_universal_r128_balanced_beta0.05",
+            dfop_fusion_run_name("thai", "attn", "universal", 128, 2),
+            "thai_attn_universal_r128_top2_beta0.05",
         )
         self.assertEqual(
-            dfop_sft_run_name("malay", "attn", "universal", 128),
-            "malay_attn_universal_r128_balanced",
+            dfop_sft_run_name("malay", "attn", "universal", 128, 1),
+            "malay_attn_universal_r128_top1",
         )
 
 

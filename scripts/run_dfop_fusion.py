@@ -60,6 +60,15 @@ def _optional_positive_float(value: str) -> float | None:
     return parsed
 
 
+def _optional_positive_int(value: str) -> int | None:
+    if value.lower() in {"none", "off", "disabled", "all"}:
+        return None
+    parsed = int(value)
+    if parsed <= 0:
+        raise argparse.ArgumentTypeError("value must be positive or 'all'")
+    return parsed
+
+
 def _rank_overrides(values: Iterable[str]) -> dict[str, int]:
     result: dict[str, int] = {}
     for value in values:
@@ -124,14 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alternating-iterations", type=int, default=8)
     parser.add_argument("--alternating-tolerance", type=float, default=1e-4)
     parser.add_argument("--restarts", type=int, default=2)
+    parser.add_argument("--route-temperature", type=float, default=0.05)
     parser.add_argument(
-        "--route-solver",
-        choices=("balanced_exact",),
-        default="balanced_exact",
-        help="Strict balanced outer layer-OT solver",
+        "--top-source-layers",
+        type=_optional_positive_int,
+        default=2,
+        help="Sources retained per target row; use 'all' for a dense route",
     )
-    parser.add_argument("--route-marginal-tolerance", type=float, default=1e-7)
-    parser.add_argument("--route-support-tolerance", type=float, default=1e-9)
     parser.add_argument("--beta", type=float, default=0.05)
     parser.add_argument(
         "--trust-ratio",
@@ -229,9 +237,8 @@ def _build_config(args: argparse.Namespace) -> DFOPConfig:
             seed=args.seed,
         ),
         route=RouteConfig(
-            solver=args.route_solver,
-            marginal_tolerance=args.route_marginal_tolerance,
-            support_tolerance=args.route_support_tolerance,
+            temperature=args.route_temperature,
+            top_source_layers=args.top_source_layers,
         ),
         core_scale=CoreScaleConfig(
             enabled=not args.disable_core_scale,

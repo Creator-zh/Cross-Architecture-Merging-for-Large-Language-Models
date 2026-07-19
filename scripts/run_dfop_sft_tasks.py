@@ -45,6 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("full", "attn"), default="full")
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
+    parser.add_argument("--top-source-layers", type=int, default=2)
     parser.add_argument("--train-mode", choices=("full", "lora"), default="full")
     parser.add_argument(
         "--profile",
@@ -70,7 +71,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _fusion_model(args: argparse.Namespace, task: str) -> Path:
     name = dfop_fusion_run_name(
-        task, args.mode, args.track, args.rank
+        task, args.mode, args.track, args.rank, args.top_source_layers
     )
     return (args.fusion_results_root / name / "fused_model").resolve()
 
@@ -88,7 +89,7 @@ def _command(args: argparse.Namespace, task: str) -> tuple[list[str], Path]:
     output = (
         args.sft_results_root
         / dfop_sft_run_name(
-            task, args.mode, args.track, args.rank
+            task, args.mode, args.track, args.rank, args.top_source_layers
         )
         / f"{args.train_mode}_{args.profile}"
     ).resolve()
@@ -157,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
         unknown = set(args.tasks) - set(TASK_PRESETS)
         if unknown:
             raise ValueError(f"Unknown tasks: {sorted(unknown)}")
+        if args.top_source_layers <= 0:
+            raise ValueError("--top-source-layers must be positive")
         if len(args.gpus) < len(args.tasks):
             raise ValueError("Provide at least one GPU per concurrently trained task")
         jobs = [(_command(args, task), task, args.gpus[index]) for index, task in enumerate(args.tasks)]
@@ -171,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
         "gpus": args.gpus[: len(args.tasks)],
         "train_mode": args.train_mode,
         "profile": args.profile,
-        "route_solver": "balanced_exact",
+        "top_source_layers": args.top_source_layers,
         "commands": [command for (command, _), _, _ in jobs],
     }
     (args.sft_results_root / "sft_launch_manifest.json").write_text(
@@ -189,7 +192,7 @@ def main(argv: list[str] | None = None) -> int:
             output.mkdir(parents=True, exist_ok=True)
             log_path = (
                 log_root
-                / f"{task}_{args.mode}_{args.train_mode}_{args.profile}_balanced.log"
+                / f"{task}_{args.mode}_{args.train_mode}_{args.profile}_top{args.top_source_layers}.log"
             )
             log_file = log_path.open("a" if args.resume else "w", encoding="utf-8")
             logs.append(log_file)

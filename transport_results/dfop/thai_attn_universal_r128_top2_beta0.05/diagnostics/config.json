@@ -1,0 +1,52 @@
+{
+  "core_scale": {
+    "enabled": true,
+    "eps": 1e-08,
+    "gamma_max": 4.0,
+    "gamma_min": 0.25,
+    "minimum_relative_norm": 1e-06
+  },
+  "fusion": {
+    "beta": 0.05,
+    "preserve_target_tail": true,
+    "trust_ratio": 0.1
+  },
+  "modules": [
+    "q",
+    "k",
+    "v",
+    "o"
+  ],
+  "ot_procrustes": {
+    "alternating_tolerance": 0.0001,
+    "max_alternating_iterations": 8,
+    "restarts": 2,
+    "seed": 42,
+    "sinkhorn": {
+      "check_interval": 10,
+      "entropy": 0.05,
+      "max_iterations": 200,
+      "tolerance": 1e-06
+    }
+  },
+  "route": {
+    "temperature": 0.05,
+    "top_source_layers": 2
+  },
+  "spectral_points": {
+    "center": false,
+    "eps": 1e-08,
+    "sigma_power": 1.0,
+    "width_normalization": true
+  },
+  "store_all_stage1_couplings": false,
+  "svd": {
+    "algorithm": "randomized",
+    "compute_dtype": "float32",
+    "oversample": 16,
+    "power_iterations": 2,
+    "rank_by_module": {},
+    "rank_default": 128,
+    "seed": 42
+  }
+}
