@@ -17,7 +17,11 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from core.dfop.module_registry import collect_module_linears  # noqa: E402
-from core.dfop.task_presets import TASK_PRESETS, get_task_preset  # noqa: E402
+from core.dfop.task_presets import (  # noqa: E402
+    TASK_PRESETS,
+    dfop_fusion_run_name,
+    get_task_preset,
+)
 
 
 def _csv(value: str) -> list[str]:
@@ -68,8 +72,12 @@ def _derive_one(args: argparse.Namespace, task: str) -> dict:
 
     preset = get_task_preset(task)
     beta = 0.05 if args.track == "universal" else preset.matched_beta
-    full_name = f"{task}_full_{args.track}_r{args.rank}_beta{beta:g}"
-    attn_name = f"{task}_attn_{args.track}_r{args.rank}_beta{beta:g}"
+    full_name = dfop_fusion_run_name(
+        task, "full", args.track, args.rank, beta
+    )
+    attn_name = dfop_fusion_run_name(
+        task, "attn", args.track, args.rank, beta
+    )
     full_model_path = (args.results_root / full_name / "fused_model").resolve()
     original_path = (args.models_root / preset.target_local_dir).resolve()
     output_root = (args.results_root / attn_name).resolve()

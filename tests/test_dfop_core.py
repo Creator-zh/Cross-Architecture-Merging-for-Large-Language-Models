@@ -156,12 +156,29 @@ class OTProcrustesTests(unittest.TestCase):
 
 
 class RouteTests(unittest.TestCase):
-    def test_route_is_row_normalized_and_topk_sparse(self):
+    def test_exact_balanced_route_has_both_uniform_marginals(self):
         cost = torch.tensor([[0.1, 0.5, 0.2], [0.8, 0.3, 0.4]])
-        result = compute_layer_route(cost, RouteConfig(temperature=0.1, top_source_layers=2))
+        result = compute_layer_route(cost, RouteConfig())
         self.assertTrue(torch.allclose(result.route.sum(1), torch.ones(2)))
-        self.assertTrue(torch.equal((result.route > 0).sum(1), torch.tensor([2, 2])))
-        self.assertFalse(torch.allclose(result.route.sum(0), torch.full((3,), 2 / 3)))
+        self.assertTrue(
+            torch.allclose(result.route.sum(0), torch.full((3,), 2 / 3), atol=1e-7)
+        )
+        self.assertLessEqual(int(result.selected_mask.sum()), 2 + 3 - 1)
+        self.assertLess(result.row_marginal_error, 1e-7)
+        self.assertLess(result.column_marginal_error, 1e-7)
+
+    def test_balancing_prevents_a_globally_preferred_endpoint_from_collapsing(self):
+        cost = torch.tensor(
+            [
+                [0.0, 1.0, 2.0, 3.0],
+                [0.0, 1.1, 2.1, 3.1],
+                [0.0, 1.2, 2.2, 3.2],
+                [0.0, 1.3, 2.3, 3.3],
+            ]
+        )
+        result = compute_layer_route(cost)
+        self.assertTrue(torch.allclose(result.route.sum(0), torch.ones(4)))
+        self.assertAlmostEqual(float(result.route[:, 0].sum()), 1.0, places=7)
 
 
 class LayerCostCheckpointTests(unittest.TestCase):
@@ -346,7 +363,7 @@ class PipelineTests(unittest.TestCase):
                 max_alternating_iterations=3,
                 restarts=1,
             ),
-            route=RouteConfig(temperature=0.2, top_source_layers=1),
+            route=RouteConfig(),
             fusion=FusionConfig(beta=0.1, trust_ratio=0.2),
         )
         with tempfile.TemporaryDirectory() as temporary:
@@ -369,8 +386,10 @@ class PipelineTests(unittest.TestCase):
                     torch.allclose(result.routes[module_name].sum(1), torch.ones(2))
                 )
                 self.assertTrue(
-                    torch.equal(
-                        (result.routes[module_name] > 0).sum(1), torch.ones(2, dtype=torch.long)
+                    torch.allclose(
+                        result.routes[module_name].sum(0),
+                        torch.full((3,), 2 / 3),
+                        atol=1e-7,
                     )
                 )
             self.assertFalse(
@@ -433,7 +452,7 @@ class PipelineTests(unittest.TestCase):
                 max_alternating_iterations=2,
                 restarts=1,
             ),
-            route=RouteConfig(temperature=0.2, top_source_layers=1),
+            route=RouteConfig(),
             fusion=FusionConfig(beta=0.1, trust_ratio=0.2),
         )
         run_dfop_pipeline(full_target, full_source, config, compute_device="cpu")

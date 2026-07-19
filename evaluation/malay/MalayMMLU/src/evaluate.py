@@ -113,15 +113,19 @@ def main():
     model = model_class.from_pretrained(args.base_model, token=args.token, torch_dtype=torch.float16, trust_remote_code=True, device_map= "cuda")
 
     model.eval()
+    # Checkpoint directory names are arbitrary (for example ``fused_model``).
+    # Prompt selection must follow the architecture stored in config so target
+    # and fused checkpoints receive byte-identical benchmark prompts.
+    model_family = getattr(model.config, "model_type", "") or model.__class__.__name__
 
     print(args.task)
     
     playground = args.playground # Enable testing of code with only 10 examples of questions
     if args.shot == 0:
-        inputs, golds, outputs_options = prepare_data(playground, args.base_model, tokenizer,args.task)
+        inputs, golds, outputs_options = prepare_data(playground, model_family, tokenizer,args.task)
         print(inputs[0])
     else:
-        inputs, golds, outputs_options = prepare_data_few_shot(args.shot,args.base_model, tokenizer,args.task)
+        inputs, golds, outputs_options = prepare_data_few_shot(args.shot,model_family, tokenizer,args.task)
         print(inputs[0])
     preds = []
     probs = []

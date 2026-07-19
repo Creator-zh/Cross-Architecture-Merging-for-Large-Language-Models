@@ -106,7 +106,7 @@ $$
 | forward pass | 需要 | 不允许 |
 | 神经元特征 | pre/post activation channel | 归一化谱载荷点云 |
 | 层代价 | activation feature OT objective | 直接 OT–Procrustes 几何残差 |
-| 层路由 | 均匀行列边际的 balanced OT | 只固定目标行边际 |
+| 层路由 | 均匀行列边际的 balanced OT | 七模块独立的精确 balanced OT |
 | 模块粒度 | pre/post 与投影模块 | 七种线性层独立路由 |
 | 神经元选择 | activation top-neuron | 主方法不使用数据掩码 |
 | 权重输出 | 传输残差 | 目标 top-\(k\) 稠密核心更新 |
@@ -453,20 +453,20 @@ $$
 C^c\in\mathbb R^{L\times M}.
 $$
 
-主方法只固定目标层行边际：
+主方法使用严格均匀行列边际：
 
 $$
 P^{c,*}
 =
 \arg\min_{
 P\geq0,
-\;P\mathbf1_M=\frac1L\mathbf1_L
+\;P\mathbf1_M=\frac1L\mathbf1_L,
+\;P^\top\mathbf1_L=\frac1M\mathbf1_M
 }
-\langle C^c,P\rangle
--\tau H(P).
+\langle C^c,P\rangle.
 $$
 
-不强制源层列边际均匀。按目标层条件化：
+该问题直接使用 HiGHS 线性规划求精确基本可行解。按目标层条件化：
 
 $$
 P^c_{\mathrm{eff},\ell m}
@@ -474,18 +474,12 @@ P^c_{\mathrm{eff},\ell m}
 L P^{c,*}_{\ell m}.
 $$
 
-等价闭式为：
+并同时满足：
 
 $$
-\boxed{
-P^c_{\mathrm{eff},\ell m}
+(P^c_{\mathrm{eff}})^\top\mathbf1_L
 =
-\frac{
-\exp(-C^c_{\ell m}/\tau)
-}{
-\sum_{r=1}^{M}\exp(-C^c_{\ell r}/\tau)
-}
-}
+\frac{L}{M}\mathbf1_M.
 $$
 
 得到七个矩阵：
@@ -500,21 +494,7 @@ P^{\mathrm{up}}_{\mathrm{eff}},
 P^{\mathrm{down}}_{\mathrm{eff}}.
 $$
 
-理论主方法允许所有源层参与。为控制第二阶段成本，可以保留每行 top-\(s\) 并重新归一化：
-
-$$
-\widehat P^c_{\ell m}
-=
-\frac{
-P^c_{\mathrm{eff},\ell m}
-\mathbf1[m\in\mathcal N_c(\ell)]
-}{
-\sum_{r\in\mathcal N_c(\ell)}
-P^c_{\mathrm{eff},\ell r}
-}.
-$$
-
-top-\(s\) 是路由稀疏化，不改变最终权重更新是稠密矩阵这一事实。
+精确运输多面体的基本可行解至多有 \(L+M-1\) 个非零元素，因此主方法不再执行会破坏列边缘的逐行 top-\(s\)。
 
 ---
 
@@ -818,8 +798,9 @@ for module c:
 
 Phase 2: seven routes
 for module c:
-    P_eff_c = row_softmax(-C_c / tau)
-    optionally retain and renormalize top-s source layers
+    solve exact balanced OT with row mass 1/L and column mass 1/M
+    P_eff_c = L * P_c
+    verify row and column marginal errors
 
 Phase 3: pairwise transport cores
 for module c and selected pair (l,m):
@@ -997,10 +978,9 @@ inner_ot_procrustes:
   compute_dtype: float32
 
 layer_route:
-  mode: row_softmax
-  temperature: 0.05
-  top_source_layers: 2
-  save_dense_route: true
+  mode: balanced_exact
+  marginal_tolerance: 1.0e-7
+  support_tolerance: 1.0e-9
 
 core_scale:
   enabled: true
@@ -1277,10 +1257,10 @@ full orthogonal \(R\) 比 SVD 严格符号不确定性更灵活，可能把有�
 1. 七个独立路由；
 2. Q/K/V/O 共享路由；
 3. gate/up/down 共享路由；
-4. balanced outer OT；
-5. 逐行 softmax；
-6. hard argmin；
-7. top-1/top-2/top-4/全路由。
+4. 精确 balanced outer OT；
+5. 熵正则 balanced OT；
+6. 逐行 softmax；
+7. hard argmin。
 
 ### 15.3 神经元传输
 
@@ -1457,7 +1437,12 @@ $$
 \\
 &P^c_{\mathrm{eff}}
 =
-\operatorname{rowsoftmax}(-C^c/\tau)
+L\operatorname{BalancedOT}
+\left(
+C^c,
+\frac1L\mathbf1_L,
+\frac1M\mathbf1_M
+\right)
 \\
 &\Downarrow
 \\

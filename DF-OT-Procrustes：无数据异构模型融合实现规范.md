@@ -752,9 +752,10 @@ P^c
 =
 \arg\min_{P\in\mathcal U(a^L,b^M)}
 \langle C^c,P\rangle
--\eta_cH(P)
 }
 $$
+
+主实现使用 HiGHS 线性规划求精确基本可行解，不加入外层熵正则。
 
 得到：
 
@@ -782,28 +783,15 @@ $$
 \sum_m\bar P^c_{\ell m}=1.
 $$
 
-### 10.1 稀疏化
+### 10.1 稀疏支持集
 
-熵正则 OT 通常给出稠密正值。若每个目标层只保留 top-\(s\) 源层：
-
-$$
-\mathcal N_c(\ell)
-=
-\operatorname{TopS}_m(\bar P^c_{\ell m}),
-$$
-
-则必须重新归一化：
+精确线性 OT 的基本可行解天然稀疏，非零元素数量至多为：
 
 $$
-\bar P^{c,\mathrm{sparse}}_{\ell m}
-=
-\frac{
-\bar P^c_{\ell m}
-\mathbf1[m\in\mathcal N_c(\ell)]
-}{
-\sum_{j\in\mathcal N_c(\ell)}\bar P^c_{\ell j}
-}.
+L+M-1.
 $$
+
+主实现直接使用该非零支持集进行阶段三计算，不再逐行 top-\(s\)，避免破坏严格列边缘。
 
 ---
 
@@ -1291,10 +1279,9 @@ layer_cost:
   normalize_each_term: true
 
 outer_ot:
-  entropy: 0.1
-  sinkhorn_iters: 1000
-  sinkhorn_tol: 1.0e-7
-  top_source_layers: 2
+  solver: balanced_exact
+  marginal_tolerance: 1.0e-7
+  support_tolerance: 1.0e-9
 
 mapping:
   mode: barycentric
@@ -1516,5 +1503,4 @@ U_B\in\mathbb R^{b\times k},
 $$
 
 该方法在数学上避免了跨宽度 SVD 子空间直接相乘的问题，也避免了补零和神经元截断的任意坐标假设。但它仍然是基于权重几何的无数据估计，是否对应可迁移能力必须通过严格的源模型特异性对照和下游实验验证。
-
 

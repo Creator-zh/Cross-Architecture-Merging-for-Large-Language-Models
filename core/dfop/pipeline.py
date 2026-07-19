@@ -299,7 +299,7 @@ def run_dfop_pipeline(
         _prepare_stage2_cache(
             stage2_output,
             {
-                "schema_version": 1,
+                "schema_version": 2,
                 "stage1": base_cache_signature,
                 "route": full_config["route"],
                 "core_scale": full_config["core_scale"],
@@ -326,6 +326,7 @@ def run_dfop_pipeline(
     dense_routes: Dict[str, torch.Tensor] = {}
     routes: Dict[str, torch.Tensor] = {}
     route_diagnostics: List[dict] = []
+    route_summaries: Dict[str, dict] = {}
     for module_name in config.modules:
         expected_shape = (
             len(target_records[module_name]),
@@ -385,12 +386,30 @@ def run_dfop_pipeline(
         dense_routes[module_name] = route_result.dense_route.cpu()
         routes[module_name] = route_result.route.cpu()
         LOGGER.info(
-            "Layer route complete module=%s mean_entropy=%.6f",
+            "Layer route complete module=%s solver=%s mean_entropy=%.6f "
+            "row_error=%.3e column_error=%.3e support=%d",
             module_name,
+            route_result.solver,
             float(route_result.entropy.mean()),
+            route_result.row_marginal_error,
+            route_result.column_marginal_error,
+            int(route_result.selected_mask.sum()),
         )
+        route_summaries[module_name] = {
+            "solver": route_result.solver,
+            "transport_objective": route_result.transport_objective,
+            "row_marginal_error": route_result.row_marginal_error,
+            "column_marginal_error": route_result.column_marginal_error,
+            "support_size": int(route_result.selected_mask.sum()),
+            "mean_effective_source_count": float(
+                route_result.effective_source_count.mean()
+            ),
+            "source_column_mass": route_result.route.sum(dim=0).tolist(),
+        }
         for layer_index in range(cost.shape[0]):
-            nonzero = torch.nonzero(route_result.route[layer_index] > 0, as_tuple=False).flatten()
+            nonzero = torch.nonzero(
+                route_result.selected_mask[layer_index], as_tuple=False
+            ).flatten()
             route_diagnostics.append(
                 {
                     "module": module_name,
@@ -401,6 +420,9 @@ def run_dfop_pipeline(
                     ),
                     "selected_source_layers": nonzero.tolist(),
                     "selected_weights": route_result.route[layer_index, nonzero].tolist(),
+                    "route_solver": route_result.solver,
+                    "row_marginal_error": route_result.row_marginal_error,
+                    "column_marginal_error": route_result.column_marginal_error,
                 }
             )
         if diagnostics_output is not None:
@@ -422,7 +444,10 @@ def run_dfop_pipeline(
     for module_name in config.modules:
         route = routes[module_name]
         for target_index, target_record_cpu in enumerate(target_records[module_name]):
-            selected = torch.nonzero(route[target_index] > 0, as_tuple=False).flatten().tolist()
+            selected = torch.nonzero(
+                route[target_index] > config.route.support_tolerance,
+                as_tuple=False,
+            ).flatten().tolist()
             LOGGER.info(
                 "Fusion module=%s target_layer=%d selected_sources=%s",
                 module_name,
@@ -593,6 +618,7 @@ def run_dfop_pipeline(
         "source_layers": {name: len(source_linears[name]) for name in config.modules},
         "rank_by_module": rank_by_module,
         "compute_device": str(device),
+        "route": route_summaries,
         "apply_updates": apply_updates,
         "collected_low_rank_updates": collect_low_rank_updates,
         "timing_seconds": {

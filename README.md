@@ -3,7 +3,7 @@
 本仓库现在只保留两条方法线：
 
 1. **Transport and Merge（原仓库方法，简称 T&M/HOT）**：使用数据和 forward activation，先计算神经元与层间 OT，再将 8B 通用模型迁移到 1B 领域模型。原始入口是 `run_activs_and_hot.py`、`generate_hot_residual.py` 和 `scripts/run_train_final.sh`。
-2. **DF-OT-Procrustes（本仓库新增方法，简称 DFOP）**：全流程不使用数据、tokenizer 或 forward；对 Q/K/V/O/Gate/Up/Down 七类矩阵分别计算跨模型层代价、路由矩阵与异构维度映射。实现位于 `core/dfop/`，入口是 `scripts/run_dfop_fusion.py` 和 `scripts/run_dfop_tasks.py`。
+2. **DF-OT-Procrustes（本仓库新增方法，简称 DFOP）**：全流程不使用数据、tokenizer 或 forward；对 Q/K/V/O/Gate/Up/Down 七类矩阵分别计算跨模型层代价、严格平衡 OT 路由与异构维度映射。实现位于 `core/dfop/`，入口是 `scripts/run_dfop_fusion.py` 和 `scripts/run_dfop_tasks.py`。
 
 已移除早期的 DF-SRN/DCASF/SVD-spectrum 试验实现，避免实验时误选旧方法。评测与数据加载文件仍被保留，因为它们属于原仓库复现或两种方法的公共测评基础设施。
 

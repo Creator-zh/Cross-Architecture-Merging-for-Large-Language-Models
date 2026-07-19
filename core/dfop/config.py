@@ -80,14 +80,17 @@ class OTProcrustesConfig:
 
 @dataclass
 class RouteConfig:
-    temperature: float = 0.05
-    top_source_layers: Optional[int] = 2
+    solver: str = "balanced_exact"
+    marginal_tolerance: float = 1.0e-7
+    support_tolerance: float = 1.0e-9
 
     def validate(self) -> None:
-        if self.temperature <= 0:
-            raise ValueError("route temperature must be positive")
-        if self.top_source_layers is not None and self.top_source_layers <= 0:
-            raise ValueError("top_source_layers must be positive or None")
+        if self.solver != "balanced_exact":
+            raise ValueError("route.solver must be 'balanced_exact'")
+        if self.marginal_tolerance <= 0:
+            raise ValueError("route marginal_tolerance must be positive")
+        if self.support_tolerance < 0:
+            raise ValueError("route support_tolerance must be non-negative")
 
 
 @dataclass
@@ -144,4 +147,3 @@ class DFOPConfig:
 
     def to_dict(self) -> dict:
         return asdict(self)
-

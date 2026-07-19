@@ -67,7 +67,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("full", "attn"), default="full")
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
-    parser.add_argument("--top-source-layers", type=int, default=2)
     parser.add_argument("--sft-train-mode", choices=("full", "lora"), default="full")
     parser.add_argument("--sft-profile", choices=("declared", "legacy"), default="declared")
     parser.add_argument("--scope", choices=("primary", "extended", "all"), default="primary")
@@ -121,7 +120,6 @@ def _dfop_model_path(
         resolved_mode,
         args.track,
         args.rank,
-        args.top_source_layers,
     )
     return (args.results_root / run_name / "fused_model").resolve()
 
@@ -160,7 +158,7 @@ def _model_for_variant(
         return (
             args.sft_results_root
             / dfop_sft_run_name(
-                task, args.mode, args.track, args.rank, args.top_source_layers
+                task, args.mode, args.track, args.rank
             )
             / f"{args.sft_train_mode}_{args.sft_profile}"
         ).resolve()
@@ -262,7 +260,14 @@ def _build_job(
     else:
         command = [
             sys.executable,
-            "src/evaluate.py",
+            str(
+                REPOSITORY_ROOT
+                / "evaluation"
+                / "malay"
+                / "MalayMMLU"
+                / "src"
+                / "evaluate.py"
+            ),
             "--by_letter",
             "--shot",
             "0",

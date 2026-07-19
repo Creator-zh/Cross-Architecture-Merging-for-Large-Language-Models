@@ -45,11 +45,18 @@ def build_parser() -> argparse.ArgumentParser:
         help="Universal beta=.05 or each paper task's original fusion alpha",
     )
     parser.add_argument("--rank", type=int, default=128)
-    parser.add_argument("--top-source-layers", type=int, default=2)
     parser.add_argument("--trust-ratio", default="0.10")
     parser.add_argument("--model-dtype", default="bfloat16")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument(
+        "--reuse-legacy-top2-stage1-cache",
+        action="store_true",
+        help=(
+            "Reuse the old top-2 run's layer-cost cache. This is safe because "
+            "stage 1 does not depend on the outer route; stage 2 is always new."
+        ),
+    )
     parser.add_argument(
         "--extra-arg",
         action="append",
@@ -67,8 +74,6 @@ def _validate(args: argparse.Namespace) -> None:
         raise ValueError("Provide at least one GPU id per concurrently launched task")
     if args.rank <= 0:
         raise ValueError("--rank must be positive")
-    if args.top_source_layers <= 0:
-        raise ValueError("--top-source-layers must be positive")
 
 
 def _model_paths(args: argparse.Namespace, task_name: str) -> tuple[str, str]:
@@ -91,14 +96,27 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
     modules = "q,k,v,o" if args.mode == "attn" else "q,k,v,o,gate,up,down"
     beta = fusion_beta(args.track, task_name)
     run_name = dfop_fusion_run_name(
-        task_name, args.mode, args.track, args.rank, args.top_source_layers, beta
+        task_name, args.mode, args.track, args.rank, beta
     )
     output = (args.results_root / run_name).resolve()
     shared_cache = (
         args.results_root
         / "cache"
-        / f"{task_name}_{args.mode}_r{args.rank}_top{args.top_source_layers}"
+        / f"{task_name}_{args.mode}_r{args.rank}_balanced"
     ).resolve()
+    if args.reuse_legacy_top2_stage1_cache:
+        stage1_cache = (
+            args.results_root
+            / "cache"
+            / f"{task_name}_{args.mode}_r{args.rank}_top2"
+            / "stage1"
+        ).resolve()
+        if not stage1_cache.is_dir():
+            raise FileNotFoundError(
+                f"Missing legacy stage-1 cache for {task_name}: {stage1_cache}"
+            )
+    else:
+        stage1_cache = shared_cache / "stage1"
     command = [
         sys.executable,
         str(REPOSITORY_ROOT / "scripts" / "run_dfop_fusion.py"),
@@ -109,7 +127,7 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
         "--output-dir",
         str(output),
         "--stage1-cache-dir",
-        str(shared_cache / "stage1"),
+        str(stage1_cache),
         "--stage2-cache-dir",
         str(shared_cache / "stage2"),
         "--device",
@@ -120,8 +138,6 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
         modules,
         "--rank",
         str(args.rank),
-        "--top-source-layers",
-        str(args.top_source_layers),
         "--beta",
         str(beta),
         "--trust-ratio",
@@ -157,7 +173,8 @@ def main(argv: list[str] | None = None) -> int:
         "mode": args.mode,
         "track": args.track,
         "rank": args.rank,
-        "top_source_layers": args.top_source_layers,
+        "route_solver": "balanced_exact",
+        "reuse_legacy_top2_stage1_cache": args.reuse_legacy_top2_stage1_cache,
         "commands": [command for command, _, _ in jobs],
     }
     (args.results_root / "launch_manifest.json").write_text(
@@ -170,7 +187,7 @@ def main(argv: list[str] | None = None) -> int:
         for command, task, gpu in jobs:
             log_path = (
                 log_root
-                / f"{task}_{args.mode}_{args.track}_top{args.top_source_layers}.log"
+                / f"{task}_{args.mode}_{args.track}_balanced.log"
             )
             log_file = log_path.open("a" if args.resume else "w", encoding="utf-8")
             opened_logs.append(log_file)

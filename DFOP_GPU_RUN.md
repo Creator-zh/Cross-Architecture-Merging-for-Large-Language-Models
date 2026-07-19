@@ -1,6 +1,6 @@
 # DF-OT-Procrustes GPU 运行指南
 
-本文档对应 `core/dfop/` 与 `scripts/run_dfop_fusion.py` 的当前实现。主流程只读取两个模型的配置和权重，不加载 tokenizer、数据集或输入张量，也不调用模型 `forward`。
+本文档对应 `core/dfop/` 与 `scripts/run_dfop_fusion.py` 的当前实现。主流程只读取两个模型的配置和权重，不加载 tokenizer、数据集或输入张量，也不调用模型 `forward`。Q/K/V/O/Gate/Up/Down 分别使用严格平衡的外层 OT 路由：目标边缘为 `1/L`，源边缘为 `1/M`，并使用 SciPy HiGHS 求解稀疏的精确线性运输问题。
 
 ## 1. 本地 CPU 验证
 
@@ -45,7 +45,6 @@ python scripts/run_dfop_fusion.py \
   --model-dtype bfloat16 \
   --modules q \
   --rank 32 \
-  --top-source-layers 1 \
   --alternating-iterations 2 \
   --restarts 1 \
   --dry-run
@@ -62,7 +61,6 @@ python scripts/run_dfop_fusion.py \
   --model-dtype bfloat16 \
   --modules q,k,v,o \
   --rank 128 \
-  --top-source-layers 2 \
   --beta 0.05 \
   --trust-ratio 0.10
 ```
@@ -82,8 +80,8 @@ python scripts/run_dfop_fusion.py \
   --svd-oversample 16 \
   --svd-power-iterations 2 \
   --inner-entropy 0.05 \
-  --route-temperature 0.05 \
-  --top-source-layers 2 \
+  --route-solver balanced_exact \
+  --route-marginal-tolerance 1e-7 \
   --beta 0.05 \
   --trust-ratio 0.10
 ```
@@ -111,7 +109,7 @@ output_dir/
     └── model-*.safetensors
 ```
 
-`route_dense_*.pt` 保存 top-s 截断前的逐行归一化路由，便于之后重新做 top-1、top-4 和 all 消融。`route_*.pt` 是本次实际用于融合的路由。
+`route_dense_*.pt` 与 `route_*.pt` 都保存严格平衡 OT 的实际稀疏路由；保留两个文件名是为了兼容现有诊断读取代码。精确线性 OT 的基本可行解天然稀疏，因此不再执行会破坏源层边缘约束的逐行 top-k。`run_report.json` 额外记录每个模块的行边缘误差、列边缘误差、支持集大小和每个源层的总路由质量。对于目标 16 层、源 32 层，应满足每行总质量为 1、每列总质量为 0.5。
 
 严格无数据约束下，脚本不会把 tokenizer 保存进 `fused_model/`。评测时应显式使用目标模型原有 tokenizer；融合模型的输入/输出语义仍由目标架构定义。
 
@@ -129,7 +127,8 @@ log-domain Sinkhorn 同时需要代价、log-kernel、耦合和若干临时张�
 
 - `pair_diagnostics.jsonl` 中两个边缘误差是否接近 `--sinkhorn-tolerance`；
 - `output_converged` 与 `input_converged`；
-- 路由熵是否全部接近 0 或接近均匀分布；
+- `run_report.json` 中严格平衡路由的行、列边缘误差是否低于 `1e-7`；
+- 精确路由支持集是否异常集中在少数目标层；
 - `core_scale` 是否大量命中 `gamma_min`/`gamma_max`；
 - `relative_update_norm` 是否大量被 trust ratio 截断。
 
@@ -156,9 +155,25 @@ python scripts/run_dfop_tasks.py \
   --mode full \
   --track universal \
   --rank 128 \
-  --top-source-layers 2 \
   --trust-ratio 0.10
 ```
+
+如果服务器保留了旧版 top-2 实验由同一模型、rank 和阶段一参数生成的完整层代价缓存，可以只复用阶段一并重新计算严格平衡路由及阶段二：
+
+```bash
+python scripts/run_dfop_tasks.py \
+  --tasks medical,thai,malay \
+  --gpus 0,1,2 \
+  --models-root ./models \
+  --results-root ./transport_results/dfop \
+  --mode full \
+  --track universal \
+  --rank 128 \
+  --trust-ratio 0.10 \
+  --reuse-legacy-top2-stage1-cache
+```
+
+该开关读取 `cache/<task>_full_r128_top2/stage1`，但严格平衡实验使用新的 `balanced` 阶段二缓存和输出目录。阶段一代价与旧 top-2 路由参数无关，因此这种复用不会混入旧路由；manifest 不匹配时程序仍会拒绝加载。
 
 `universal` 对三个任务固定使用 `beta=0.05`。`matched` 则使用原 Transport and Merge 融合阶段的任务参数：medical 0.03、Thai 0.01、Malay 0.10。主结果应先报告 universal track，matched track 作为对照：
 
@@ -242,7 +257,6 @@ python scripts/run_dfop_tasks.py \
   --mode full \
   --track universal \
   --rank 128 \
-  --top-source-layers 2 \
   --trust-ratio 0.10
 ```
 
