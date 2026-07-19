@@ -1,0 +1,18 @@
+=== DFOP attn-only top-1 summary ===
+
+[medical]
+  target: mean=0.4052
+  dfop_attn: mean=0.3587  (Δ=-0.0465)
+  dfop_sft: mean=0.3670   (Δ=-0.0382)
+
+[thai]
+  target: mean=0.3809
+  dfop_attn: mean=0.3865  (Δ=+0.0056)
+  dfop_sft: mean=0.3879   (Δ=+0.0070)
+
+[malay]
+  target: MalayMMLU=0.4095
+  dfop_attn: MalayMMLU=0.4011  (Δ=-0.0084)
+  dfop_sft: MalayMMLU=0.3853   (Δ=-0.0242)
+
+Done.
