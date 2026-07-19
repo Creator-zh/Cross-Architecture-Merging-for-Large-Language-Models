@@ -1,0 +1,13 @@
+=== DFOP Thai/Malay resume summary ===
+
+[thai]
+  target: mean=0.3809 | xcopa_th=0.5800, xnli_th=0.4518, xquad_th=0.1109
+  dfop_full: mean=0.3766 | xcopa_th=0.5960, xnli_th=0.4498, xquad_th=0.0840
+  dfop_sft: mean=0.3823 | xcopa_th=0.5760, xnli_th=0.4490, xquad_th=0.1218
+
+[malay]
+  target: mean=0.4095 | MalayMMLU=0.4095
+  dfop_full: mean=0.3967 | MalayMMLU=0.3967
+  dfop_sft: mean=0.3834 | MalayMMLU=0.3834
+
+Done.

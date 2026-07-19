@@ -6,6 +6,9 @@ from .config import CoreScaleConfig
 from .types import OTProcrustesResult, PairCoreResult, SVDRecord
 
 
+COUPLING_MARGINAL_TOLERANCE = 1.0e-4
+
+
 @torch.no_grad()
 def compute_pair_core(
     target: SVDRecord,
@@ -29,9 +32,9 @@ def compute_pair_core(
         raise ValueError("output coupling shape does not match SVD output dimensions")
     if pi_in.shape != (target.shape[1], source.shape[1]):
         raise ValueError("input coupling shape does not match SVD input dimensions")
-    if float((pi_out.sum(1) - output_target_mass).abs().max()) > 1e-4:
+    if float((pi_out.sum(1) - output_target_mass).abs().max()) > COUPLING_MARGINAL_TOLERANCE:
         raise ValueError("output coupling rows do not match target masses")
-    if float((pi_in.sum(1) - input_target_mass).abs().max()) > 1e-4:
+    if float((pi_in.sum(1) - input_target_mass).abs().max()) > COUPLING_MARGINAL_TOLERANCE:
         raise ValueError("input coupling rows do not match target masses")
 
     u_a = target.u.to(device=pi_out.device, dtype=torch.float32)

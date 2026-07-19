@@ -19,7 +19,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from core.dfop.task_presets import TASK_PRESETS, get_task_preset  # noqa: E402
+from core.dfop.task_presets import (  # noqa: E402
+    TASK_PRESETS,
+    dfop_fusion_run_name,
+    dfop_sft_run_name,
+    get_task_preset,
+)
 
 
 def _csv(value: str) -> list[str]:
@@ -62,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mode", choices=("full", "attn"), default="full")
     parser.add_argument("--track", choices=("universal", "matched"), default="universal")
     parser.add_argument("--rank", type=int, default=128)
+    parser.add_argument("--top-source-layers", type=int, default=2)
     parser.add_argument("--sft-train-mode", choices=("full", "lora"), default="full")
     parser.add_argument("--sft-profile", choices=("declared", "legacy"), default="declared")
     parser.add_argument("--scope", choices=("primary", "extended", "all"), default="primary")
@@ -109,10 +115,14 @@ def _dfop_model_path(
     task: str,
     mode: str | None = None,
 ) -> Path:
-    preset = get_task_preset(task)
     resolved_mode = mode or args.mode
-    beta = 0.05 if args.track == "universal" else preset.matched_beta
-    run_name = f"{task}_{resolved_mode}_{args.track}_r{args.rank}_beta{beta:g}"
+    run_name = dfop_fusion_run_name(
+        task,
+        resolved_mode,
+        args.track,
+        args.rank,
+        args.top_source_layers,
+    )
     return (args.results_root / run_name / "fused_model").resolve()
 
 
@@ -149,7 +159,9 @@ def _model_for_variant(
     if variant == "dfop_sft":
         return (
             args.sft_results_root
-            / f"{task}_{args.mode}_{args.track}_r{args.rank}"
+            / dfop_sft_run_name(
+                task, args.mode, args.track, args.rank, args.top_source_layers
+            )
             / f"{args.sft_train_mode}_{args.sft_profile}"
         ).resolve()
     try:
@@ -161,11 +173,17 @@ def _model_for_variant(
 
 
 def _canonical_class(value: str) -> str:
+    """Normalize MalayMMLU labels: numeric index (0->A) or letter -> uppercase letter."""
     value = value.strip()
-    try:
-        return str(int(float(value)))
-    except ValueError:
+    if not value:
         return value
+    try:
+        idx = int(float(value))
+        if 0 <= idx < 26:
+            return chr(65 + idx)
+    except ValueError:
+        pass
+    return value.upper()[:1]
 
 
 def _postprocess_malay(job: EvaluationJob) -> None:

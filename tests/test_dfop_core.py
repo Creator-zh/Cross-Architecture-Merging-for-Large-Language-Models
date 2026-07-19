@@ -24,7 +24,7 @@ from core.dfop.layer_route import compute_layer_route
 from core.dfop.layer_cost import compute_module_layer_costs
 from core.dfop.lora_export import exact_lora_factors
 from core.dfop.ot_procrustes import solve_ot_procrustes
-from core.dfop.pipeline import run_dfop_pipeline
+from core.dfop.pipeline import _solve_pair_transport, run_dfop_pipeline
 from core.dfop.module_registry import collect_module_linears
 from core.dfop.pair_core import compute_pair_core
 from core.dfop.sinkhorn import log_sinkhorn, uniform_mass
@@ -94,6 +94,27 @@ class SinkhornTests(unittest.TestCase):
 
 
 class OTProcrustesTests(unittest.TestCase):
+    def test_pair_transport_retries_when_initial_marginal_is_infeasible(self):
+        points = torch.randn(3, 2)
+        config = DFOPConfig(
+            ot_procrustes=OTProcrustesConfig(
+                sinkhorn=SinkhornConfig(max_iterations=200)
+            )
+        )
+        coupling = torch.full((3, 3), 1.0 / 9.0)
+        initial = replace(_result(coupling), marginal_error=2.0e-4, converged=False)
+        retried = replace(_result(coupling), marginal_error=1.0e-5, converged=False)
+
+        with patch(
+            "core.dfop.pipeline.solve_ot_procrustes",
+            side_effect=[initial, retried],
+        ) as solve:
+            result = _solve_pair_transport(points, points, config)
+
+        self.assertIs(result, retried)
+        self.assertEqual(solve.call_count, 2)
+        self.assertEqual(solve.call_args_list[1].kwargs["config"].sinkhorn.max_iterations, 900)
+
     def test_recovers_permutation_and_rotation(self):
         torch.manual_seed(3)
         x = torch.randn(7, 3)

@@ -1292,6 +1292,7 @@ def main():
             split=args.malaysian_sft_split,
             max_samples=max_samples,
             max_length=args.block_size,
+            local_dataset_path=getattr(args, "local_dataset_path", None),
         )
 
         print(train_dataset)

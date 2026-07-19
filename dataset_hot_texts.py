@@ -618,11 +618,77 @@ dataset_hot_texts.py
 # ==========================================
 
 
+def _resolve_malaysian_sft_root(local_dataset_path: str) -> str:
+    """Resolve a HF hub cache / snapshot / dataset directory to a loadable root."""
+    root = os.path.abspath(os.path.expanduser(local_dataset_path))
+    if not os.path.isdir(root):
+        raise FileNotFoundError(f"Malaysian-SFT local path does not exist: {root}")
+
+    snapshots = os.path.join(root, "snapshots")
+    if os.path.isdir(snapshots):
+        ref_main = os.path.join(root, "refs", "main")
+        if os.path.isfile(ref_main):
+            rev = open(ref_main, encoding="utf-8").read().strip()
+            candidate = os.path.join(snapshots, rev)
+            if os.path.isdir(candidate):
+                return candidate
+        revs = sorted(
+            name
+            for name in os.listdir(snapshots)
+            if os.path.isdir(os.path.join(snapshots, name))
+        )
+        if not revs:
+            raise FileNotFoundError(f"No snapshots under Malaysian-SFT cache: {snapshots}")
+        return os.path.join(snapshots, revs[-1])
+    return root
+
+
+def _list_local_malaysian_splits(dataset_root: str) -> list[str]:
+    data_dir = os.path.join(dataset_root, "data")
+    if not os.path.isdir(data_dir):
+        return []
+    splits = set()
+    for name in os.listdir(data_dir):
+        if not name.endswith(".parquet"):
+            continue
+        # e.g. google_translate_camel_ai-00000-of-00001.parquet
+        stem = name[: -len(".parquet")]
+        splits.add(stem.rsplit("-", 2)[0] if "-000" in stem else stem)
+    return sorted(splits)
+
+
+def _load_malaysian_sft_split(
+    split: str,
+    local_dataset_path: Optional[str] = None,
+):
+    """Load one Malaysian-SFT split from a local path (preferred) or the Hub."""
+    if local_dataset_path:
+        dataset_root = _resolve_malaysian_sft_root(local_dataset_path)
+        data_dir = os.path.join(dataset_root, "data")
+        parquet_files = sorted(
+            os.path.join(data_dir, name)
+            for name in os.listdir(data_dir)
+            if name.startswith(f"{split}-") and name.endswith(".parquet")
+        ) if os.path.isdir(data_dir) else []
+        if parquet_files:
+            print(
+                f"[Data] Loading Malaysian-SFT split={split} from local parquet "
+                f"({len(parquet_files)} files) under {dataset_root}"
+            )
+            return load_dataset("parquet", data_files=parquet_files, split="train")
+        print(f"[Data] Loading Malaysian-SFT split={split} from local dataset dir {dataset_root}")
+        return load_dataset(dataset_root, split=split)
+
+    print(f"[Data] Loading mesolitica/Malaysian-SFT split={split}")
+    return load_dataset("mesolitica/Malaysian-SFT", split=split)
+
+
 def build_sft_dataset_from_malaysian_sft(
     tokenizer: AutoTokenizer,
     split: str = "google_translate_camel_ai",
     max_samples: Optional[int] = None,
     max_length: int = 2048,
+    local_dataset_path: Optional[str] = None,
 ) -> Dataset:
     """
     使用 mesolitica/Malaysian-SFT 做指令微调 (instruction tuning)。
@@ -638,22 +704,36 @@ def build_sft_dataset_from_malaysian_sft(
       <|start_header_id|>assistant<|end_header_id|>
       {output}{eos}
     """
+    if local_dataset_path is None:
+        env_local = os.environ.get("MALAYSIAN_SFT_LOCAL_DATASET")
+        if env_local:
+            local_dataset_path = env_local
+            print(f"[Data] Use env MALAYSIAN_SFT_LOCAL_DATASET={local_dataset_path}")
+
     print(f"[Data] Malaysian-SFT mode = {split}")
+    if local_dataset_path:
+        print(f"[Data] Malaysian-SFT local_dataset_path = {local_dataset_path}")
 
     # ========== Step 1：装载 / 采样原始样本 ==========
     if split == "random_all":
-        try:
-            all_splits = get_dataset_split_names("mesolitica/Malaysian-SFT")
-            print(f"[Data] Found splits in mesolitica/Malaysian-SFT: {all_splits}")
-        except Exception as e:
-            print(f"[Data][Warn] get_dataset_split_names failed: {e}")
-            all_splits = ["google_translate_camel_ai"]
-            print(f"[Data][Warn] Fallback to fixed split list: {all_splits}")
+        all_splits: list[str] = []
+        if local_dataset_path:
+            dataset_root = _resolve_malaysian_sft_root(local_dataset_path)
+            all_splits = _list_local_malaysian_splits(dataset_root)
+            print(f"[Data] Found local splits in {dataset_root}: {all_splits}")
+        if not all_splits:
+            try:
+                all_splits = list(get_dataset_split_names("mesolitica/Malaysian-SFT"))
+                print(f"[Data] Found splits in mesolitica/Malaysian-SFT: {all_splits}")
+            except Exception as e:
+                print(f"[Data][Warn] get_dataset_split_names failed: {e}")
+                all_splits = ["google_translate_camel_ai"]
+                print(f"[Data][Warn] Fallback to fixed split list: {all_splits}")
 
         all_samples = []
         for sp in all_splits:
             print(f"[Data] Loading split: {sp}")
-            ds_sp = load_dataset("mesolitica/Malaysian-SFT", split=sp)
+            ds_sp = _load_malaysian_sft_split(sp, local_dataset_path=local_dataset_path)
             all_samples.extend(ds_sp)
 
         total = len(all_samples)
@@ -670,8 +750,7 @@ def build_sft_dataset_from_malaysian_sft(
         raw_ds = Dataset.from_list(all_samples)
 
     else:
-        print(f"[Data] Loading mesolitica/Malaysian-SFT split={split}")
-        raw_ds = load_dataset("mesolitica/Malaysian-SFT", split=split)
+        raw_ds = _load_malaysian_sft_split(split, local_dataset_path=local_dataset_path)
 
         if max_samples is not None and max_samples > 0:
             max_samples = min(max_samples, len(raw_ds))

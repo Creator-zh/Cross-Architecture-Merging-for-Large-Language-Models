@@ -86,3 +86,37 @@ def get_task_preset(name: str) -> DFOPTaskPreset:
         return TASK_PRESETS[name]
     except KeyError as error:
         raise ValueError(f"Unknown DFOP task preset: {name}") from error
+
+
+def fusion_beta(track: str, task: str) -> float:
+    """Universal track uses 0.05; matched track uses each paper task alpha."""
+    if track == "universal":
+        return 0.05
+    return float(get_task_preset(task).matched_beta)
+
+
+def dfop_fusion_run_name(
+    task: str,
+    mode: str,
+    track: str,
+    rank: int,
+    top_source_layers: int,
+    beta: float | None = None,
+) -> str:
+    """Directory name for a fused DFOP run (includes top-k to avoid collisions)."""
+    resolved_beta = fusion_beta(track, task) if beta is None else float(beta)
+    return (
+        f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"
+        f"_beta{resolved_beta:g}"
+    )
+
+
+def dfop_sft_run_name(
+    task: str,
+    mode: str,
+    track: str,
+    rank: int,
+    top_source_layers: int,
+) -> str:
+    """Directory name for a post-merge SFT run."""
+    return f"{task}_{mode}_{track}_r{int(rank)}_top{int(top_source_layers)}"

@@ -1,0 +1,11 @@
+{
+  "model": "evaluation_results/dfop_pre_sft/malay/dfop_full/primary",
+  "prediction_file": "evaluation_results/dfop_pre_sft/malay/dfop_full/primary/MalayMMLU_result_fused_model_True_0shot.csv",
+  "results": {
+    "MalayMMLU": {
+      "acc,none": 0.3967290298599926,
+      "correct": 9606,
+      "total": 24213
+    }
+  }
+}

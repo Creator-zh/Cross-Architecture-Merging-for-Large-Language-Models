@@ -1,0 +1,11 @@
+{
+  "model": "evaluation_results/dfop_pre_sft/malay/target/primary",
+  "prediction_file": "evaluation_results/dfop_pre_sft/malay/target/primary/MalayMMLU_result_Malaysian-Llama-3.2-1B-Instruct-v0.1_True_0shot.csv",
+  "results": {
+    "MalayMMLU": {
+      "acc,none": 0.4095320695494156,
+      "correct": 9916,
+      "total": 24213
+    }
+  }
+}

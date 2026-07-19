@@ -73,14 +73,36 @@ viz_*/
 
 # Large directories (if needed)
 models/
+data/
+hf_cache/
+hf_cache_eval/
+sft_results/
 hot_results/
 lm-evaluation-harness/
 MalayMMLU/
 !evaluation/malay/MalayMMLU/
 !evaluation/malay/MalayMMLU/**
+# Keep MalayMMLU code, ignore its local data symlink tree contents if large
+evaluation/malay/MalayMMLU/data/
+evaluation/malay/MalayMMLU/output/
 Yue-Benchmark/
 !evaluation/cantonese/**
 TinyLLaVA_Factory/
+
+# Transport outputs are huge (weights/cache). Light metadata is force-added in commits.
+transport_results/
+
+# Score artifacts (weights excluded by *.safetensors / models / sft_results)
+!evaluation_results/
+!evaluation_results/**
+!evaluation_results/**/*.json
+!evaluation_results/**/*.jsonl
+!evaluation_results/**/*.txt
+!evaluation_results/**/*.md
+!evaluation_results/**/*.csv
+!evaluation_results/**/*.done
+evaluation_results/**/*.log
+evaluation_results/**/logs/
 
 # Temporary files
 *.tmp

@@ -1,0 +1,48 @@
+{
+  "apply_updates": true,
+  "collected_low_rank_updates": false,
+  "compute_device": "cuda:0",
+  "method": "dfop",
+  "modules": [
+    "q",
+    "k",
+    "v",
+    "o",
+    "gate",
+    "up",
+    "down"
+  ],
+  "rank_by_module": {
+    "down": 128,
+    "gate": 128,
+    "k": 128,
+    "o": 128,
+    "q": 128,
+    "up": 128,
+    "v": 128
+  },
+  "source_layers": {
+    "down": 32,
+    "gate": 32,
+    "k": 32,
+    "o": 32,
+    "q": 32,
+    "up": 32,
+    "v": 32
+  },
+  "target_layers": {
+    "down": 16,
+    "gate": 16,
+    "k": 16,
+    "o": 16,
+    "q": 16,
+    "up": 16,
+    "v": 16
+  },
+  "timing_seconds": {
+    "layer_cost_and_route": 0.05181479314342141,
+    "pair_transport_and_fusion": 2462.129914994817,
+    "svd": 15.668983358889818,
+    "total": 2477.8507131468505
+  }
+}

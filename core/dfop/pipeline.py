@@ -4,7 +4,7 @@ import json
 import logging
 import os
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Dict, List, Mapping, Sequence
 
@@ -19,7 +19,7 @@ from .layer_route import compute_layer_route
 from .lora_export import exact_lora_factors
 from .module_registry import MODULE_SPECS, collect_module_linears, common_rank_limit
 from .ot_procrustes import solve_ot_procrustes
-from .pair_core import compute_pair_core
+from .pair_core import COUPLING_MARGINAL_TOLERANCE, compute_pair_core
 from .sinkhorn import uniform_mass
 from .spectral_points import build_spectral_points
 from .svd_cache import compute_svd_record
@@ -216,6 +216,42 @@ def _side_points(
     return build_spectral_points(basis, record.s, config.spectral_points).to(
         device=device, dtype=torch.float32
     )
+
+
+@torch.no_grad()
+def _solve_pair_transport(
+    target_points: torch.Tensor,
+    source_points: torch.Tensor,
+    config: DFOPConfig | None = None,
+):
+    """Solve one pair OT problem, retrying only numerically infeasible couplings."""
+    ot_config = (config or DFOPConfig()).ot_procrustes
+    best = solve_ot_procrustes(target_points, source_points, config=ot_config)
+    if best.marginal_error <= COUPLING_MARGINAL_TOLERANCE:
+        return best
+
+    initial_iterations = ot_config.sinkhorn.max_iterations
+    for retry_iterations in (
+        max(900, 3 * initial_iterations),
+        max(1800, 6 * initial_iterations),
+    ):
+        LOGGER.warning(
+            "Retrying pair OT: marginal_error=%g exceeds tolerance=%g; max_iterations=%d",
+            best.marginal_error,
+            COUPLING_MARGINAL_TOLERANCE,
+            retry_iterations,
+        )
+        retry_config = replace(
+            ot_config,
+            sinkhorn=replace(ot_config.sinkhorn, max_iterations=retry_iterations),
+        )
+        retry = solve_ot_procrustes(target_points, source_points, config=retry_config)
+        if retry.marginal_error < best.marginal_error:
+            best = retry
+        if best.marginal_error <= COUPLING_MARGINAL_TOLERANCE:
+            return best
+
+    return best
 
 
 @torch.no_grad()
@@ -428,10 +464,8 @@ def run_dfop_pipeline(
                     y_out = _side_points(source_record, "output", config, device)
                     x_in = _side_points(target_record, "input", config, device)
                     y_in = _side_points(source_record, "input", config, device)
-                    output_result = solve_ot_procrustes(
-                        x_out, y_out, config=config.ot_procrustes
-                    )
-                    input_result = solve_ot_procrustes(x_in, y_in, config=config.ot_procrustes)
+                    output_result = _solve_pair_transport(x_out, y_out, config)
+                    input_result = _solve_pair_transport(x_in, y_in, config)
                     output_mass = uniform_mass(
                         x_out.shape[0], device=device, dtype=torch.float32
                     )

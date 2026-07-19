@@ -16,7 +16,12 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from core.dfop.task_presets import TASK_PRESETS, get_task_preset  # noqa: E402
+from core.dfop.task_presets import (  # noqa: E402
+    TASK_PRESETS,
+    dfop_fusion_run_name,
+    fusion_beta,
+    get_task_preset,
+)
 
 
 def _csv(value: str) -> list[str]:
@@ -40,7 +45,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="Universal beta=.05 or each paper task's original fusion alpha",
     )
     parser.add_argument("--rank", type=int, default=128)
-    parser.add_argument("--top-source-layers", default="2")
+    parser.add_argument("--top-source-layers", type=int, default=2)
     parser.add_argument("--trust-ratio", default="0.10")
     parser.add_argument("--model-dtype", default="bfloat16")
     parser.add_argument("--resume", action="store_true")
@@ -62,6 +67,8 @@ def _validate(args: argparse.Namespace) -> None:
         raise ValueError("Provide at least one GPU id per concurrently launched task")
     if args.rank <= 0:
         raise ValueError("--rank must be positive")
+    if args.top_source_layers <= 0:
+        raise ValueError("--top-source-layers must be positive")
 
 
 def _model_paths(args: argparse.Namespace, task_name: str) -> tuple[str, str]:
@@ -82,8 +89,10 @@ def _command(args: argparse.Namespace, task_name: str) -> tuple[list[str], Path]
     preset = get_task_preset(task_name)
     target, source = _model_paths(args, task_name)
     modules = "q,k,v,o" if args.mode == "attn" else "q,k,v,o,gate,up,down"
-    beta = 0.05 if args.track == "universal" else preset.matched_beta
-    run_name = f"{task_name}_{args.mode}_{args.track}_r{args.rank}_beta{beta:g}"
+    beta = fusion_beta(args.track, task_name)
+    run_name = dfop_fusion_run_name(
+        task_name, args.mode, args.track, args.rank, args.top_source_layers, beta
+    )
     output = (args.results_root / run_name).resolve()
     shared_cache = (
         args.results_root
@@ -132,7 +141,10 @@ def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
         _validate(args)
-        jobs = [(_command(args, task), task, args.gpus[index]) for index, task in enumerate(args.tasks)]
+        jobs = []
+        for index, task in enumerate(args.tasks):
+            command, _ = _command(args, task)
+            jobs.append((command, task, args.gpus[index]))
     except (ValueError, FileNotFoundError) as error:
         raise SystemExit(str(error)) from error
 
@@ -145,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
         "mode": args.mode,
         "track": args.track,
         "rank": args.rank,
+        "top_source_layers": args.top_source_layers,
         "commands": [command for command, _, _ in jobs],
     }
     (args.results_root / "launch_manifest.json").write_text(
@@ -155,7 +168,10 @@ def main(argv: list[str] | None = None) -> int:
     opened_logs = []
     try:
         for command, task, gpu in jobs:
-            log_path = log_root / f"{task}_{args.mode}_{args.track}.log"
+            log_path = (
+                log_root
+                / f"{task}_{args.mode}_{args.track}_top{args.top_source_layers}.log"
+            )
             log_file = log_path.open("a" if args.resume else "w", encoding="utf-8")
             opened_logs.append(log_file)
             environment = os.environ.copy()
