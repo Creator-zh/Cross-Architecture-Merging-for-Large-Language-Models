@@ -4,51 +4,25 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from scripts.evaluate_dfop_tasks import EvaluationJob, _postprocess_malay
-from scripts.run_dfop_tasks import main as run_dfop_tasks_main
+from core.aci.presets import aci_run_name, aci_sft_run_name, get_task_preset
+from scripts.evaluate_aci_tasks import EvaluationJob, _postprocess_malay
+from scripts.run_aci_tasks import main as run_aci_tasks_main
 from scripts.summarize_merge_results import main as summarize_main
-from core.dfop.task_presets import dfop_fusion_run_name, dfop_sft_run_name, get_task_preset
 
 
-class DFOPPathNamingTests(unittest.TestCase):
-    def test_fusion_and_sft_names_include_top(self):
-        self.assertEqual(
-            dfop_fusion_run_name("medical", "attn", "universal", 128, 1),
-            "medical_attn_universal_r128_top1_beta0.05",
-        )
-        self.assertEqual(
-            dfop_fusion_run_name("thai", "attn", "universal", 128, 2),
-            "thai_attn_universal_r128_top2_beta0.05",
-        )
-        self.assertEqual(
-            dfop_sft_run_name("malay", "attn", "universal", 128, 1),
-            "malay_attn_universal_r128_top1",
-        )
+class ACIPathNamingTests(unittest.TestCase):
+    def test_names_contain_task_and_beta_only(self):
+        self.assertEqual(aci_run_name("medical"), "medical_aci_beta0.03")
+        self.assertEqual(aci_run_name("thai", 0.02), "thai_aci_beta0.02")
+        self.assertEqual(aci_sft_run_name("malay"), "malay_aci_beta0.1_sft")
 
-    def test_grouped_and_balanced_names_do_not_collide(self):
-        self.assertEqual(
-            dfop_fusion_run_name(
-                "medical",
-                "full",
-                "universal",
-                128,
-                2,
-                route_grouping="qk_vo_ffn",
-            ),
-            "medical_full_universal_r128_top2_qk_vo_ffn_beta0.05",
-        )
-        self.assertEqual(
-            dfop_fusion_run_name(
-                "medical",
-                "full",
-                "universal",
-                128,
-                2,
-                route_solver="balanced_exact",
-                route_grouping="qk_vo_ffn",
-            ),
-            "medical_full_universal_r128_balanced_qk_vo_ffn_beta0.05",
-        )
+    def test_three_presets_define_reference_and_shared_source(self):
+        medical = get_task_preset("medical")
+        thai = get_task_preset("thai")
+        malay = get_task_preset("malay")
+        self.assertNotEqual(medical.reference_hf_id, medical.target_hf_id)
+        self.assertEqual(thai.reference_hf_id, malay.reference_hf_id)
+        self.assertEqual(medical.source_hf_id, thai.source_hf_id)
 
 
 class MalayPostprocessTests(unittest.TestCase):
@@ -110,14 +84,18 @@ class MergeSummaryTests(unittest.TestCase):
             self.assertIn("| medical | 50.00 |", summary)
 
 
-class DFOPTaskLauncherTests(unittest.TestCase):
-    def test_launcher_writes_serializable_manifest_and_starts_task(self):
+class ACITaskLauncherTests(unittest.TestCase):
+    def test_launcher_writes_manifest_and_passes_three_models(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             models_root = root / "models"
             preset = get_task_preset("medical")
-            (models_root / preset.target_local_dir).mkdir(parents=True)
-            (models_root / preset.source_local_dir).mkdir(parents=True)
+            for name in (
+                preset.target_local_dir,
+                preset.reference_local_dir,
+                preset.source_local_dir,
+            ):
+                (models_root / name).mkdir(parents=True, exist_ok=True)
             results_root = root / "results"
 
             class SuccessfulProcess:
@@ -125,10 +103,10 @@ class DFOPTaskLauncherTests(unittest.TestCase):
                     return 0
 
             with patch(
-                "scripts.run_dfop_tasks.subprocess.Popen",
+                "scripts.run_aci_tasks.subprocess.Popen",
                 return_value=SuccessfulProcess(),
             ) as popen:
-                return_code = run_dfop_tasks_main(
+                return_code = run_aci_tasks_main(
                     [
                         "--tasks",
                         "medical",
@@ -139,18 +117,23 @@ class DFOPTaskLauncherTests(unittest.TestCase):
                         "--results-root",
                         str(results_root),
                         "--dry-run",
-                        "--route-grouping",
-                        "qk_vo_ffn",
+                        "--beta",
+                        "medical=0.04",
                     ]
                 )
 
             self.assertEqual(return_code, 0)
             self.assertEqual(popen.call_count, 1)
-            manifest = json.loads((results_root / "launch_manifest.json").read_text(encoding="utf-8"))
-            self.assertEqual(manifest["tasks"], ["medical"])
-            self.assertEqual(manifest["route_grouping"], "qk_vo_ffn")
-            self.assertIn("--route-grouping", manifest["commands"][0])
-            self.assertEqual(manifest["commands"][0][0], popen.call_args.args[0][0])
+            manifest = json.loads(
+                (results_root / "launch_manifest.json").read_text(encoding="utf-8")
+            )
+            self.assertEqual(manifest["method"], "aci")
+            self.assertEqual(manifest["betas"]["medical"], 0.04)
+            command = manifest["commands"][0]
+            self.assertIn("--reference-model", command)
+            self.assertIn("--source-model", command)
+            self.assertNotIn("--route-solver", command)
+            self.assertEqual(command[0], popen.call_args.args[0][0])
 
 
 if __name__ == "__main__":

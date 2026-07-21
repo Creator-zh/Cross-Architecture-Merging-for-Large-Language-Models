@@ -19,18 +19,18 @@ def _jsonable(value: Any) -> Any:
         if value.numel() == 1:
             return value.item()
         return value.detach().cpu().tolist()
-    if isinstance(value, torch.dtype):
+    if isinstance(value, (torch.dtype, torch.device)):
         return str(value).replace("torch.", "")
-    if isinstance(value, torch.device):
-        return str(value)
     return value
 
 
 def write_json(path: str | Path, payload: Any) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as handle:
-        json.dump(_jsonable(payload), handle, ensure_ascii=False, indent=2, sort_keys=True)
+    path.write_text(
+        json.dumps(_jsonable(payload), ensure_ascii=False, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
 
 
 def write_jsonl(path: str | Path, records: Iterable[Any]) -> None:

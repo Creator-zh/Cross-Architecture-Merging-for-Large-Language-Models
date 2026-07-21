@@ -3,6 +3,27 @@
 Every model that gets merged in this repo is publicly available on Hugging Face.
 `scripts/download_models.py` downloads all of them in one go.
 
+## ACI three-task configuration
+
+ACI uses a domain target, a same-architecture 1B reference, and the shared
+heterogeneous 8B source. The reference defines the protected domain task
+vector; it is not an additional capability donor.
+
+| Task | Target 1B | Reference 1B | Source 8B | β |
+|---|---|---|---|---:|
+| **medical** | [`PathFinderKR/Llama-3-1B-Medical-Instruct`](https://huggingface.co/PathFinderKR/Llama-3-1B-Medical-Instruct) | [`unsloth/Llama-3.2-1B`](https://huggingface.co/unsloth/Llama-3.2-1B) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.03 |
+| **thai** | [`typhoon-ai/llama3.2-typhoon2-1b-instruct`](https://huggingface.co/typhoon-ai/llama3.2-typhoon2-1b-instruct) | [`unsloth/Llama-3.2-1B-Instruct`](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct) | same shared 8B | 0.01 |
+| **malay** | [`mesolitica/Malaysian-Llama-3.2-1B-Instruct`](https://huggingface.co/mesolitica/Malaysian-Llama-3.2-1B-Instruct) | [`unsloth/Llama-3.2-1B-Instruct`](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct) | same shared 8B | 0.10 |
+
+Download just this set with:
+
+```bash
+python scripts/download_models.py \
+  --tasks medical thai malay base_8b reference_1b_base reference_1b_instruct
+```
+
+The remaining sections describe the original T&M/HOT paper reproduction.
+
 ## Six paper tasks (run_train_final.sh)
 
 For each task we fuse a **1B small "donor" model** (Model A — domain/language SFT'd) with the **shared 8B base** (Model B).
@@ -10,7 +31,7 @@ For each task we fuse a **1B small "donor" model** (Model A — domain/language 
 | Task | Model A (1B, fine-tuned) — HF repo | Model B (8B base) — HF repo | Fuse α | Train α | Train LR | Dataset |
 |---|---|---|---:|---:|---:|---|
 | **medical** | [`PathFinderKR/Llama-3-1B-Medical-Instruct`](https://huggingface.co/PathFinderKR/Llama-3-1B-Medical-Instruct) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.03 | **0.005** | 3e-7 | `medical` |
-| **thai** | [`scb10x/llama3.2-typhoon2-1b-instruct`](https://huggingface.co/scb10x/llama3.2-typhoon2-1b-instruct) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.01 | **0.01** | 1e-7 | `fineweb_thai` ([`ChavyvAkvar/fineweb-2-1M-Sample-Thai`](https://huggingface.co/datasets/ChavyvAkvar/fineweb-2-1M-Sample-Thai)) |
+| **thai** | [`typhoon-ai/llama3.2-typhoon2-1b-instruct`](https://huggingface.co/typhoon-ai/llama3.2-typhoon2-1b-instruct) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.01 | **0.01** | 1e-7 | `fineweb_thai` ([`ChavyvAkvar/fineweb-2-1M-Sample-Thai`](https://huggingface.co/datasets/ChavyvAkvar/fineweb-2-1M-Sample-Thai)) |
 | **finance** | [`unsloth/Llama-3.2-1B-Instruct`](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.03 | **0.03** | 1e-6 | `finance` |
 | **cantonese** | [`unsloth/Llama-3.2-1B-Instruct`](https://huggingface.co/unsloth/Llama-3.2-1B-Instruct) | [`FlagAlpha/Llama3-Chinese-8B-Instruct`](https://huggingface.co/FlagAlpha/Llama3-Chinese-8B-Instruct) | 0.01 | **0.1** | 1e-8 | `cantonese` |
 | **indonesian** | [`digo-prayudha/Llama-3.2-1B-Indonesian-lora`](https://huggingface.co/digo-prayudha/Llama-3.2-1B-Indonesian-lora) | [`unsloth/Llama-3.1-8B-Instruct`](https://huggingface.co/unsloth/Llama-3.1-8B-Instruct) | 0.01 | **0.1** | 1e-6 | `indonesian` |

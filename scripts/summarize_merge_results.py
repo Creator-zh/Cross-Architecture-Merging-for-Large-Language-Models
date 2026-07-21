@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Summarize the five-variant medical/Thai/Malay merge-only evaluation."""
+"""Summarize Medical/Thai/Malay merge-only evaluation results."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
-from core.dfop.task_presets import TASK_PRESETS, get_task_preset  # noqa: E402
+from core.aci.presets import TASK_PRESETS, get_task_preset  # noqa: E402
 
 
-DEFAULT_VARIANTS = ("target", "source", "hot", "dfop_attn", "dfop_full")
+DEFAULT_VARIANTS = ("target", "aci")
 METRIC_PRIORITY = {
     "xquad_th": ("f1,none", "f1", "exact_match,none", "exact_match"),
     "mgsm_direct_th": (

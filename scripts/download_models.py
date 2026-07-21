@@ -1,4 +1,4 @@
-"""Batch-download every model used by the paper from Hugging Face.
+"""Batch-download models used by ACI and the original T&M reproduction.
 
 Usage:
     # Optional: a token is only needed for gated/private repos. If you do not need one, omit it.
@@ -11,9 +11,8 @@ Usage:
     python scripts/download_models.py --tasks medical thai          # subset
     python scripts/download_models.py --models-root /data/my/models # custom dest
 
-This reproduces the exact HF repo IDs the paper used. Per-task fused-model
-output names (e.g. `medllama_fused_alpha01_fortrain_1b`) and α/lr live in
-MODELS.md; the end-to-end command is in REPRODUCE.md.
+ACI reference/source roles and the original paper's α/lr settings live in
+MODELS.md. The original T&M end-to-end command remains in REPRODUCE.md.
 """
 
 from __future__ import annotations
@@ -28,13 +27,17 @@ from pathlib import Path
 HF_REPO_MAP: list[tuple[str, str, str]] = [
     # Six tasks reported in the paper (run_train_final.sh)
     ("medical",    "PathFinderKR/Llama-3-1B-Medical-Instruct",        "llama3-1b-med"),
-    ("thai",       "scb10x/llama3.2-typhoon2-1b-instruct",            "llama3.2-typhoon2-1b-instruct"),
+    ("thai",       "typhoon-ai/llama3.2-typhoon2-1b-instruct",        "llama3.2-typhoon2-1b-instruct"),
     ("finance",    "unsloth/Llama-3.2-1B-Instruct",                   "Llama-3.2-1B-Instruct"),
     ("cantonese",  "FlagAlpha/Llama3-Chinese-8B-Instruct",            "Llama3-Chinese-8B-Instruct"),
     ("indonesian", "digo-prayudha/Llama-3.2-1B-Indonesian-lora",      "Llama-3.2-1B-Indonesian-QLora"),
     ("malay",      "mesolitica/Malaysian-Llama-3.2-1B-Instruct",      "Malaysian-Llama-3.2-1B-Instruct-v0.1"),
     # The shared 8B donor for every task above
     ("base_8b",    "unsloth/Llama-3.1-8B-Instruct",                   "Llama-3.1-8B-Instruct"),
+    # ACI same-architecture references. The instruct checkpoint shares the
+    # finance directory above, so downloads are de-duplicated by local path.
+    ("reference_1b_base", "unsloth/Llama-3.2-1B",                     "Llama-3.2-1B"),
+    ("reference_1b_instruct", "unsloth/Llama-3.2-1B-Instruct",        "Llama-3.2-1B-Instruct"),
     # Optional secondary experiments (math/reasoning ablation in trans_train_reasoning.sh)
     ("math_1b",    "masani/SFT_math_Llama-3.2-1B_epoch_1_global_step_29", "SFT_math_Llama-3.2-1B"),
 ]
@@ -97,19 +100,27 @@ def main() -> int:
         return 2
 
     failures: list[str] = []
+    seen_destinations: set[Path] = set()
+    attempted = 0
     for task, repo_id, dirname in selected:
+        destination = (models_root / dirname).resolve()
+        if destination in seen_destinations:
+            print(f"\n=== {task}: reuse {destination} ===", flush=True)
+            continue
+        seen_destinations.add(destination)
+        attempted += 1
         ep = hf_endpoint_for(repo_id, default_endpoint)
         if ep is not None:
             os.environ["HF_ENDPOINT"] = ep
         else:
             os.environ.pop("HF_ENDPOINT", None)
-        if not download(task, repo_id, models_root / dirname, token):
+        if not download(task, repo_id, destination, token):
             failures.append(task)
 
     if failures:
         print(f"\n[SUMMARY] {len(failures)} task(s) failed: {failures}", file=sys.stderr)
         return 1
-    print(f"\n[SUMMARY] All {len(selected)} downloads OK.")
+    print(f"\n[SUMMARY] All {attempted} unique downloads OK.")
     return 0
 
 

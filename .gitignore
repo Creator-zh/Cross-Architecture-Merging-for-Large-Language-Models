@@ -91,6 +91,7 @@ TinyLLaVA_Factory/
 
 # Transport outputs are huge (weights/cache). Light metadata is force-added in commits.
 transport_results/
+merge_results/
 
 # Score artifacts (weights excluded by *.safetensors / models / sft_results)
 !evaluation_results/
