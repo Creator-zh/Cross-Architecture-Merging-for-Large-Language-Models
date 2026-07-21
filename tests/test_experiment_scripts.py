@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from core.aci.presets import (
     ACI_ABLATION_PRESETS,
+    ACI_SAFE_PRESETS,
     aci_run_name,
     aci_sft_run_name,
     get_task_preset,
@@ -13,6 +14,7 @@ from core.aci.presets import (
 from scripts.evaluate_aci_ablations import summarize as summarize_ablations
 from scripts.evaluate_aci_tasks import EvaluationJob, _postprocess_malay
 from scripts.run_aci_ablations import main as run_aci_ablations_main
+from scripts.run_aci_safe_experiments import main as run_aci_safe_main
 from scripts.run_aci_tasks import main as run_aci_tasks_main
 from scripts.summarize_merge_results import main as summarize_main
 
@@ -41,6 +43,25 @@ class ACIPathNamingTests(unittest.TestCase):
         thai = [item for item in ACI_ABLATION_PRESETS if item.task == "thai"]
         self.assertEqual({item.beta for item in thai}, {0.01, 0.10})
         self.assertEqual({item.fusion_mode for item in thai}, {"attention", "ffn"})
+
+    def test_fixed_safe_matrix_has_nine_unique_task_mode_runs(self):
+        self.assertEqual(len(ACI_SAFE_PRESETS), 9)
+        names = {
+            aci_run_name(item.task, item.beta, item.fusion_mode)
+            for item in ACI_SAFE_PRESETS
+        }
+        self.assertEqual(len(names), 9)
+        for task in ("medical", "thai", "malay"):
+            experiments = [item for item in ACI_SAFE_PRESETS if item.task == task]
+            self.assertEqual(len(experiments), 3)
+            self.assertEqual(
+                {item.fusion_mode for item in experiments},
+                {"ffn_safe", "attention_circuit", "safe_combined"},
+            )
+            self.assertEqual(
+                {item.beta for item in experiments},
+                {get_task_preset(task).beta},
+            )
 
     def test_three_presets_define_reference_and_shared_source(self):
         medical = get_task_preset("medical")
@@ -247,6 +268,57 @@ class ACITaskLauncherTests(unittest.TestCase):
                 self.assertIn("--fusion-mode", command)
                 mode_index = command.index("--fusion-mode") + 1
                 self.assertEqual(command[mode_index], item["fusion_mode"])
+
+    def test_safe_launcher_writes_all_nine_isolated_commands(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            models_root = root / "models"
+            for task in ("medical", "thai", "malay"):
+                preset = get_task_preset(task)
+                for name in (
+                    preset.target_local_dir,
+                    preset.reference_local_dir,
+                    preset.source_local_dir,
+                ):
+                    (models_root / name).mkdir(parents=True, exist_ok=True)
+            results_root = root / "results"
+
+            class SuccessfulProcess:
+                def poll(self):
+                    return 0
+
+            with (
+                patch(
+                    "scripts.run_aci_ablations.subprocess.Popen",
+                    return_value=SuccessfulProcess(),
+                ) as popen,
+                patch("scripts.run_aci_ablations.time.sleep"),
+            ):
+                return_code = run_aci_safe_main(
+                    [
+                        "--gpus",
+                        "0,1",
+                        "--models-root",
+                        str(models_root),
+                        "--results-root",
+                        str(results_root),
+                        "--dry-run",
+                    ]
+                )
+
+            self.assertEqual(return_code, 0)
+            self.assertEqual(popen.call_count, 9)
+            manifest = json.loads(
+                (results_root / "safe_launch_manifest.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+            self.assertEqual(manifest["method"], "aci_safe_circuit_experiments")
+            self.assertEqual(len(manifest["experiments"]), 9)
+            self.assertEqual(
+                {item["fusion_mode"] for item in manifest["experiments"]},
+                {"ffn_safe", "attention_circuit", "safe_combined"},
+            )
 
 
 if __name__ == "__main__":

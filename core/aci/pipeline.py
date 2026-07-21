@@ -9,7 +9,12 @@ import torch
 import torch.nn as nn
 
 from .alignment import build_residual_anchor
-from .attention import attention_geometry, contract_attention, validate_attention_pair
+from .attention import (
+    attention_geometry,
+    contract_attention,
+    contract_attention_circuit,
+    validate_attention_pair,
+)
 from .config import ACIConfig
 from .ffn import contract_ffn
 from .injection import inject_protected_delta
@@ -22,6 +27,7 @@ from .registry import (
     input_embedding,
     output_head,
 )
+from .safe_injection import inject_safe_attention, inject_safe_ffn
 
 
 LOGGER = logging.getLogger(__name__)
@@ -108,9 +114,9 @@ def run_aci_pipeline(
     config.validate()
     active_modules = (
         MODULE_TYPES
-        if config.fusion_mode == "full"
+        if config.uses_attention and config.uses_ffn
         else ATTENTION_MODULE_TYPES
-        if config.fusion_mode == "attention"
+        if config.uses_attention
         else FFN_MODULE_TYPES
     )
     device = resolve_compute_device(compute_device)
@@ -165,11 +171,34 @@ def run_aci_pipeline(
             )
             for module in active_modules
         }
+        ffn_confidence = (
+            torch.zeros(
+                reference_block.gate.weight.shape[0],
+                device=device,
+                dtype=torch.float32,
+            )
+            if config.uses_safe_ffn
+            else None
+        )
+        attention_confidence = (
+            torch.zeros(
+                reference_geometry.query_heads,
+                device=device,
+                dtype=torch.float32,
+            )
+            if config.uses_circuit_attention
+            else None
+        )
         source_weight = 1.0 / len(source_indices)
         for source_index in source_indices:
             source_block = source_blocks[source_index]
             if config.uses_attention:
-                attention, attention_match = contract_attention(
+                attention_contractor = (
+                    contract_attention_circuit
+                    if config.uses_circuit_attention
+                    else contract_attention
+                )
+                attention, attention_match = attention_contractor(
                     source_block,
                     reference_block,
                     anchor.source_to_reference,
@@ -179,18 +208,56 @@ def run_aci_pipeline(
                 )
                 for module, value in attention.items():
                     compressed[module].add_(value, alpha=source_weight)
-                attention_diagnostics.append(
-                    {
-                        "target_layer": target_index,
-                        "source_layer": source_index,
-                        "mean_group_cosine": attention_match.mean_group_cosine,
-                        "minimum_group_cosine": attention_match.minimum_group_cosine,
-                        "mean_query_cosine": attention_match.mean_query_cosine,
-                        "minimum_query_cosine": attention_match.minimum_query_cosine,
-                        "group_assignment": attention_match.group_assignment,
-                        "query_assignment": attention_match.query_assignment,
-                    }
-                )
+                attention_record = {
+                    "target_layer": target_index,
+                    "source_layer": source_index,
+                    "matching_mode": (
+                        "qk_ov_circuit"
+                        if config.uses_circuit_attention
+                        else "factor_signature"
+                    ),
+                    "mean_group_cosine": attention_match.mean_group_cosine,
+                    "minimum_group_cosine": attention_match.minimum_group_cosine,
+                    "mean_query_cosine": attention_match.mean_query_cosine,
+                    "minimum_query_cosine": attention_match.minimum_query_cosine,
+                    "group_assignment": attention_match.group_assignment,
+                    "query_assignment": attention_match.query_assignment,
+                }
+                if config.uses_circuit_attention:
+                    if attention_confidence is None:
+                        raise AssertionError(
+                            "circuit attention requires accumulated head confidence"
+                        )
+                    attention_confidence.add_(
+                        attention_match.head_confidences.to(device, torch.float32),
+                        alpha=source_weight,
+                    )
+                    attention_record.update(
+                        {
+                            "selected_group_cosines": (
+                                attention_match.selected_group_cosines
+                            ),
+                            "selected_query_cosines": (
+                                attention_match.selected_query_cosines
+                            ),
+                            "mean_head_confidence": float(
+                                attention_match.head_confidences.clamp(0.0, 1.0).mean()
+                            ),
+                            "qk_gauge_cosine_before": (
+                                attention_match.qk_gauge_cosine_before
+                            ),
+                            "qk_gauge_cosine_after": (
+                                attention_match.qk_gauge_cosine_after
+                            ),
+                            "ov_gauge_cosine_before": (
+                                attention_match.ov_gauge_cosine_before
+                            ),
+                            "ov_gauge_cosine_after": (
+                                attention_match.ov_gauge_cosine_after
+                            ),
+                        }
+                    )
+                attention_diagnostics.append(attention_record)
                 del attention, attention_match
             if config.uses_ffn:
                 ffn, match = contract_ffn(
@@ -202,19 +269,170 @@ def run_aci_pipeline(
                 )
                 for module, value in ffn.items():
                     compressed[module].add_(value, alpha=source_weight)
+                if ffn_confidence is not None:
+                    ffn_confidence.add_(
+                        match.selected_cosines.to(device, torch.float32),
+                        alpha=source_weight,
+                    )
                 ffn_diagnostics.append(
                     {
                         "target_layer": target_index,
                         "source_layer": source_index,
                         "mean_match_cosine": match.mean_cosine,
                         "minimum_match_cosine": match.minimum_cosine,
+                        "positive_match_fraction": float(
+                            (match.selected_cosines > 0).float().mean()
+                        ),
                         "reused_sources": match.reused_sources,
                     }
                 )
                 del ffn, match
             _empty_cache(device)
 
-        for module in active_modules:
+        if config.uses_circuit_attention:
+            if attention_confidence is None:
+                raise AssertionError(
+                    "circuit attention mode requires accumulated head confidence"
+                )
+            target_weights = {
+                module: target_block.as_dict()[module].weight
+                for module in ATTENTION_MODULE_TYPES
+            }
+            reference_weights = {
+                module: reference_block.as_dict()[module].weight
+                for module in ATTENTION_MODULE_TYPES
+            }
+            safe_attention = inject_safe_attention(
+                target_weights,
+                reference_weights,
+                {
+                    module: compressed[module]
+                    for module in ATTENTION_MODULE_TYPES
+                },
+                attention_confidence,
+                reference_geometry,
+                beta=config.beta,
+                eps=config.eps,
+            )
+            for module in ATTENTION_MODULE_TYPES:
+                target_linear = target_block.as_dict()[module]
+                if apply_updates:
+                    target_linear.weight.copy_(
+                        safe_attention.weights[module].to(
+                            device=target_linear.weight.device,
+                            dtype=target_linear.weight.dtype,
+                        )
+                    )
+                pair = "qk" if module in ("q", "k") else "ov"
+                injection_diagnostics.append(
+                    {
+                        "target_layer": target_index,
+                        "source_layers": source_indices,
+                        "module": module,
+                        "injection_mode": "safe_attention_circuit",
+                        "circuit_pair": pair,
+                        "calibration_scale": (
+                            safe_attention.calibration_scales[module]
+                        ),
+                        "trust_coefficient": (
+                            safe_attention.trust_coefficients[pair]
+                        ),
+                        "relative_update_norm": (
+                            safe_attention.module_relative_update_norms[module]
+                        ),
+                        "joint_relative_update_norm": (
+                            safe_attention.joint_relative_update_norm
+                        ),
+                        "mean_confidence": safe_attention.mean_confidence,
+                        "minimum_confidence": safe_attention.minimum_confidence,
+                        "maximum_confidence": safe_attention.maximum_confidence,
+                        "active_confidence_fraction": (
+                            safe_attention.active_confidence_fraction
+                        ),
+                        "qk_conflict_fraction": (
+                            safe_attention.qk_conflict_fraction
+                        ),
+                        "ov_conflict_fraction": (
+                            safe_attention.ov_conflict_fraction
+                        ),
+                        "qk_source_domain_cosine": (
+                            safe_attention.qk_source_domain_cosine
+                        ),
+                        "ov_source_domain_cosine": (
+                            safe_attention.ov_source_domain_cosine
+                        ),
+                        "removed_conflict_norm_ratio": (
+                            safe_attention.removed_conflict_norm_ratio
+                        ),
+                        "applied": apply_updates,
+                    }
+                )
+                del compressed[module]
+            del safe_attention, attention_confidence
+
+        if config.uses_safe_ffn:
+            if ffn_confidence is None:
+                raise AssertionError("safe FFN mode requires accumulated confidence")
+            target_weights = {
+                module: target_block.as_dict()[module].weight
+                for module in FFN_MODULE_TYPES
+            }
+            reference_weights = {
+                module: reference_block.as_dict()[module].weight
+                for module in FFN_MODULE_TYPES
+            }
+            safe_ffn = inject_safe_ffn(
+                target_weights,
+                reference_weights,
+                {module: compressed[module] for module in FFN_MODULE_TYPES},
+                ffn_confidence,
+                beta=config.beta,
+                eps=config.eps,
+            )
+            for module in FFN_MODULE_TYPES:
+                target_linear = target_block.as_dict()[module]
+                if apply_updates:
+                    target_linear.weight.copy_(
+                        safe_ffn.weights[module].to(
+                            device=target_linear.weight.device,
+                            dtype=target_linear.weight.dtype,
+                        )
+                    )
+                injection_diagnostics.append(
+                    {
+                        "target_layer": target_index,
+                        "source_layers": source_indices,
+                        "module": module,
+                        "injection_mode": "safe_ffn",
+                        "calibration_scale": safe_ffn.calibration_scales[module],
+                        "trust_coefficient": safe_ffn.trust_coefficient,
+                        "relative_update_norm": safe_ffn.module_relative_update_norms[module],
+                        "joint_relative_update_norm": safe_ffn.joint_relative_update_norm,
+                        "mean_confidence": safe_ffn.mean_confidence,
+                        "minimum_confidence": safe_ffn.minimum_confidence,
+                        "maximum_confidence": safe_ffn.maximum_confidence,
+                        "active_confidence_fraction": safe_ffn.active_confidence_fraction,
+                        "conflict_fraction": safe_ffn.conflict_fraction,
+                        "source_domain_cosine": safe_ffn.source_domain_cosine,
+                        "removed_conflict_norm_ratio": safe_ffn.removed_conflict_norm_ratio,
+                        "applied": apply_updates,
+                    }
+                )
+                del compressed[module]
+            del safe_ffn, ffn_confidence
+
+        standard_modules = tuple(
+            module
+            for module in active_modules
+            if not (
+                (config.uses_safe_ffn and module in FFN_MODULE_TYPES)
+                or (
+                    config.uses_circuit_attention
+                    and module in ATTENTION_MODULE_TYPES
+                )
+            )
+        )
+        for module in standard_modules:
             target_linear = target_block.as_dict()[module]
             reference_linear = reference_block.as_dict()[module]
             injection = inject_protected_delta(
@@ -251,6 +469,22 @@ def run_aci_pipeline(
         "beta": config.beta,
         "fusion_mode": config.fusion_mode,
         "modules": list(active_modules),
+        "strategies": {
+            "attention": (
+                "qk_ov_circuit_gauge_conflict_gate"
+                if config.uses_circuit_attention
+                else "factor_signature"
+                if config.uses_attention
+                else "disabled"
+            ),
+            "ffn": (
+                "joint_neuron_conflict_gate"
+                if config.uses_safe_ffn
+                else "joint_neuron_match"
+                if config.uses_ffn
+                else "disabled"
+            ),
+        },
         "target_layers": len(target_blocks),
         "source_layers": len(source_blocks),
         "layer_groups": groups,

@@ -90,6 +90,7 @@ def _unique_greedy_match(
 
     return FFNMatchResult(
         source_indices=assignment,
+        selected_cosines=selected_scores,
         mean_cosine=float(selected_scores.mean()),
         minimum_cosine=float(selected_scores.min()),
         reused_sources=target_count - len(set(assignment.tolist())),

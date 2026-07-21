@@ -148,9 +148,9 @@ W_T
 \right),
 $$
 
-其中 $\mathcal{C}$ 是结构保持的异构压缩算子，$\beta$ 是唯一直接控制融合效果的超参数。
+其中 $\mathcal{C}$ 是结构保持的异构压缩算子，$\beta$ 是唯一直接控制融合效果的超参数。这是旧模式与新安全模式共享的概念主式。
 
-代码还会对上式的更新量施加一个由权重范数自动计算的安全系数。第 9 节给出与实际实现完全一致的最终公式。
+代码还会对上式的更新量施加由权重自动确定的安全操作。旧 `full/attention/ffn` 使用第 9.2 节的逐张量范数上限；当前优先验证的 `ffn_safe/attention_circuit/safe_combined` 还使用第 9.4–9.5 节的目标冲突投影与匹配置信门控。
 
 ## 6. Anchor：建立全局 residual 坐标映射
 
@@ -602,6 +602,137 @@ $$
 
 需要注意：系数保持为 $1$ 只表示“不在线性公式中主动削弱领域增量”，并不构成对所有评测任务必然提升的数学保证。新增源增量仍可能与领域能力发生干扰，最终效果必须通过服务器实验验证。
 
+### 9.4 FFN：目标冲突投影与神经元置信门控
+
+`ffn_safe` 不再把 Gate、Up、Down 当作三个独立更新。对第 $j$ 个完整 SwiGLU 神经元，记源能力增量和目标领域增量分别为：
+
+$$
+s_j=
+\left(
+\Delta_{S,j}^{\mathrm{gate}},
+\Delta_{S,j}^{\mathrm{up}},
+\Delta_{S,j}^{\mathrm{down}}
+\right),
+\qquad
+d_j=
+\left(
+\Delta_{D,j}^{\mathrm{gate}},
+\Delta_{D,j}^{\mathrm{up}},
+\Delta_{D,j}^{\mathrm{down}}
+\right),
+$$
+
+其中
+
+$$
+\Delta_D=W_T-W_0.
+$$
+
+三部分的内积与范数联合计算。当源增量和领域增量冲突时，只去掉源增量在领域反方向上的分量：
+
+$$
+\widehat s_j
+=
+s_j
+-
+\min\left(
+\frac{\langle s_j,d_j\rangle}
+{\max(\lVert d_j\rVert_2^2,\varepsilon)},
+0
+\right)d_j.
+$$
+
+因此有
+
+$$
+\langle \widehat s_j,d_j\rangle\ge 0.
+$$
+
+神经元匹配阶段保存被选源神经元的余弦相似度。对同一目标层所接收的源层取平均，并定义无需调节的置信门：
+
+$$
+q_j
+=
+\operatorname{clip}
+\left(
+\frac{1}{|\mathcal G_\ell|}
+\sum_{s\in\mathcal G_\ell}
+\operatorname{cos}(z_{0,j},z_{S,s,\pi_s(j)}),
+0,1
+\right).
+$$
+
+最终 FFN 原始更新为：
+
+$$
+U_j^{\mathrm{FFN}}=\beta q_j\widehat s_j.
+$$
+
+Gate 行、Up 行和 Down 列共享同一个 $q_j$，并对整层三个张量联合计算一次范数上限；不会出现三个因子各自选择不同神经元或不同安全缩放。
+
+### 9.5 Attention：QK/OV 电路匹配、gauge 对齐与安全注入
+
+旧 Attention 的裸 Q/K/V/O 签名余弦很低，且不同因子分解之间存在不影响功能的 gauge 自由度。`attention_circuit` 因此改为在参考低维基 $R$ 上比较实际功能电路。对 GQA 组 $g$ 中的 query head $q$，定义：
+
+$$
+A_{gq}^{QK}
+=
+(Q_{gq}R)^{\mathsf T}(K_gR),
+$$
+
+$$
+A_{gq}^{OV}
+=
+(R^{\mathsf T}O_{gq})(V_gR),
+$$
+
+$$
+z_{gq}^{\mathrm{circuit}}
+=
+\operatorname{norm}
+\left[
+\operatorname{vec}(A_{gq}^{QK}),
+\operatorname{vec}(A_{gq}^{OV})
+\right].
+$$
+
+组间分数是组内 query-head 最优双射的平均余弦；先求 GQA-group 双射，再采用对应的组内 query-head 双射。匹配后还要消除功能等价但参数坐标不同的问题：
+
+1. 对每个 RoPE 频率对求 $G_{g,r}^{QK}\in SO(2)$，并同时变换
+
+   $$
+   Q'_{gq,r}=G_{g,r}^{QK}Q_{gq,r},
+   \qquad
+   K'_{g,r}=G_{g,r}^{QK}K_{g,r}.
+   $$
+
+   因为二维旋转彼此可交换且 $G^{\mathsf T}G=I$，任意位置上的 RoPE QK 双线性形式保持不变。
+
+2. 对每个 GQA 组求 $G_g^{OV}\in O(a_0)$，并同时变换
+
+   $$
+   V'_g=G_g^{OV}V_g,
+   \qquad
+   O'_{gq}=O_{gq}(G_g^{OV})^{\mathsf T}.
+   $$
+
+   从而严格保持 $O'_{gq}V'_g=O_{gq}V_g$。
+
+head 置信度由最终选中的组分数和 query 分数组成：
+
+$$
+q_{gq}
+=
+\operatorname{clip}
+\left(
+\frac{c_g+c_{gq}}{2},0,1
+\right).
+$$
+
+Q 和 O 使用逐 head 的 $q_{gq}$；共享的 K 和 V 使用组内置信度均值。目标冲突投影分别在每个 GQA 组的联合 $(Q,K)$ 因子和联合 $(V,O)$ 因子上执行，公式与第 9.4 节相同。最后 QK 与 OV 各共享一个自动范数上限，避免破坏成对因子关系。
+
+`safe_combined` 同时启用第 9.4 与第 9.5 节；没有新增需要搜索的效果超参数。
+
 ## 10. 完整算法
 
 输入：目标模型 $M_T$、同架构参考模型 $M_0$、异构源模型 $M_S$、融合强度 $\beta$。
@@ -612,11 +743,11 @@ $$
 4. 按相对深度把全部源层划分为连续组 $\mathcal{G}_{\ell}$。
 5. 对每个目标层 $\ell$：
    1. 对每个 $s\in\mathcal{G}_{\ell}$，执行 RoPE 频率选择；
-   2. 联合匹配 GQA group 和组内 query head，压缩 Q/K/V/O；
-   3. 联合匹配 SwiGLU 神经元，压缩 Gate/Up/Down；
+   2. 用 QK/OV 功能电路联合匹配 GQA group 和组内 query head，并做保持功能的 gauge 对齐；
+   3. 联合匹配 SwiGLU 神经元，压缩 Gate/Up/Down，并保存逐神经元匹配置信度；
    4. 对组内各源层的压缩结果求均值；
    5. 对七个模块分别做 Frobenius 范数校准；
-   6. 计算源能力增量、安全系数 $\tau$ 和最终融合权重。
+   6. 对 FFN 神经元及 QK/OV 组投影目标冲突、应用匹配置信门，再计算联合安全系数和最终融合权重。
 6. 保持目标模型的其余参数不变。
 7. 保存 1B 融合模型、目标 tokenizer 元数据和全部诊断文件。
 
@@ -664,8 +795,8 @@ $$
 |---|---|---|
 | 层映射 | 学习式软路由，可能塌缩到少数层 | 连续单调分组，全部源层各使用一次 |
 | 坐标对齐 | 多个局部 OT/Procrustes 问题 | 共享词表锚定的单个全局映射 $P$ |
-| Attention | 把 Q/K/V/O 当普通矩阵独立处理 | 保持 RoPE、GQA、Q/O、K/V 结构 |
-| FFN | Gate/Up/Down 可能独立对齐 | 三者共享同一神经元选择矩阵 $S$ |
+| Attention | 把 Q/K/V/O 当普通矩阵独立处理 | 匹配 QK/OV 电路，保持 RoPE/GQA 并消除等价 gauge |
+| FFN | Gate/Up/Down 可能独立对齐 | 三者共享 $S$、目标冲突投影和逐神经元置信门 |
 | 领域保护 | 直接改写目标子空间 | 显式保留 $W_T-W_0$ 的单位系数 |
 | 效果超参数 | 路由、OT、rank、scale、trust 等多个参数 | 仅 $\beta$ |
 | 求解稳定性 | 依赖迭代收敛 | SVD 闭式映射 + 确定性离散匹配 |
@@ -677,9 +808,9 @@ ACI 仍在 Anchor 阶段使用一次闭式正交 Procrustes，但不再使用 OT
 每次融合会生成以下诊断文件：
 
 - `run_report.json`：模型层数、层分组、锚点余弦、投影形状、正交误差和耗时；
-- `attention_matches.jsonl`：每个源—目标层对的 GQA/query-head 置换与匹配余弦；
-- `ffn_matches.jsonl`：FFN 匹配的平均/最小余弦和源神经元重复数；
-- `injections.jsonl`：范数校准系数、自动安全系数和实际相对更新量。
+- `attention_matches.jsonl`：GQA/query-head 置换、QK/OV 电路余弦、head 置信度和 gauge 对齐前后余弦；
+- `ffn_matches.jsonl`：FFN 匹配的平均/最小余弦、正匹配比例和源神经元重复数；
+- `injections.jsonl`：范数校准、置信度、冲突比例、移除冲突范数、自动安全系数和实际相对更新量。
 
 结构正确性应满足：
 
@@ -695,10 +826,14 @@ $$
 $$
 0
 \leq
-\texttt{relative\_update\_norm}
+\texttt{joint\_relative\_update\_norm}
 \leq
-\beta.
+\beta
+\qquad
+\text{（安全模式）}.
 $$
+
+旧模式对应的逐模块 `relative_update_norm` 仍满足同一上界。
 
 以下情况会被实现直接拒绝：
 
@@ -718,7 +853,7 @@ $$
 1. 原领域目标模型 `target`；
 2. 同架构通用参考模型 `reference`；
 3. 8B 异构源模型 `source`；
-4. 无数据融合模型 `aci`。
+4. 无数据融合模型 `ffn_safe`、`attention_circuit` 和 `safe_combined`。
 
 可选的 `aci_sft` 只作为独立对比，不属于无数据 ACI 主方法。
 

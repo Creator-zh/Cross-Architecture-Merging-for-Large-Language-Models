@@ -3,7 +3,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 
 
-FUSION_MODES = ("full", "attention", "ffn")
+FUSION_MODES = (
+    "full",
+    "attention",
+    "ffn",
+    "ffn_safe",
+    "attention_circuit",
+    "safe_combined",
+)
 
 
 @dataclass(frozen=True)
@@ -41,8 +48,21 @@ class ACIConfig:
 
     @property
     def uses_attention(self) -> bool:
-        return self.fusion_mode in ("full", "attention")
+        return self.fusion_mode in (
+            "full",
+            "attention",
+            "attention_circuit",
+            "safe_combined",
+        )
 
     @property
     def uses_ffn(self) -> bool:
-        return self.fusion_mode in ("full", "ffn")
+        return self.fusion_mode in ("full", "ffn", "ffn_safe", "safe_combined")
+
+    @property
+    def uses_safe_ffn(self) -> bool:
+        return self.fusion_mode in ("ffn_safe", "safe_combined")
+
+    @property
+    def uses_circuit_attention(self) -> bool:
+        return self.fusion_mode in ("attention_circuit", "safe_combined")

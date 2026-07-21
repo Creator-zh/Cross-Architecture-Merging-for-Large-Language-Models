@@ -116,6 +116,13 @@ ACI_ABLATION_PRESETS: tuple[ACIAblationPreset, ...] = (
 )
 
 
+ACI_SAFE_PRESETS: tuple[ACIAblationPreset, ...] = tuple(
+    ACIAblationPreset(task, fusion_mode, TASK_PRESETS[task].beta)
+    for task in ("medical", "thai", "malay")
+    for fusion_mode in ("ffn_safe", "attention_circuit", "safe_combined")
+)
+
+
 def get_task_preset(name: str) -> ACITaskPreset:
     try:
         return TASK_PRESETS[name]

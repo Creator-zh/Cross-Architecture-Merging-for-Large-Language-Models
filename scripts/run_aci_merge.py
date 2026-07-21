@@ -37,7 +37,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--fusion-mode",
         choices=FUSION_MODES,
         default="full",
-        help="Update all seven linears, attention only, or FFN only",
+        help=(
+            "Select legacy full/module ablation or safe FFN/circuit-attention "
+            "injection"
+        ),
     )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
     parser.add_argument(

@@ -83,17 +83,28 @@ def _sample_count(payload: dict, benchmark: str, values: dict) -> int | None:
     return None
 
 
-def _task_variants(task: str) -> list[tuple[str, str, float | None]]:
+def _task_variants(
+    task: str,
+    experiments=ACI_ABLATION_PRESETS,
+) -> list[tuple[str, str, float | None]]:
     variants = [("target", "target", None)]
     variants.extend(
         (experiment.variant, experiment.fusion_mode, experiment.beta)
-        for experiment in ACI_ABLATION_PRESETS
+        for experiment in experiments
         if experiment.task == task
     )
     return variants
 
 
-def summarize(eval_root: Path, scope: str) -> tuple[Path, Path]:
+def summarize(
+    eval_root: Path,
+    scope: str,
+    experiments=ACI_ABLATION_PRESETS,
+    *,
+    csv_name: str = "aci_ablation_scores.csv",
+    markdown_name: str = "aci_ablation_summary.md",
+    title: str = "ACI attention/FFN ablation vs target",
+) -> tuple[Path, Path]:
     rows = []
     aggregates = []
     for task in TASK_PRESETS:
@@ -101,7 +112,7 @@ def summarize(eval_root: Path, scope: str) -> tuple[Path, Path]:
         target_macro = None
         target_micro = None
         task_aggregates = []
-        for variant, fusion_mode, beta in _task_variants(task):
+        for variant, fusion_mode, beta in _task_variants(task, experiments):
             result_file = _latest_result(eval_root / task / variant / scope)
             payload = json.loads(result_file.read_text(encoding="utf-8"))
             results = payload["results"]
@@ -158,14 +169,14 @@ def summarize(eval_root: Path, scope: str) -> tuple[Path, Path]:
             aggregates.append(aggregate)
 
     eval_root.mkdir(parents=True, exist_ok=True)
-    csv_path = eval_root / "aci_ablation_scores.csv"
+    csv_path = eval_root / csv_name
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(handle, fieldnames=rows[0].keys())
         writer.writeheader()
         writer.writerows(rows)
 
     lines = [
-        "# ACI attention/FFN ablation vs target",
+        f"# {title}",
         "",
         "All deltas are computed against the target from the same evaluation batch. ",
         "Thai uses XQuAD F1 in its unweighted macro. Medical also reports question-weighted micro accuracy.",
@@ -187,15 +198,15 @@ def summarize(eval_root: Path, scope: str) -> tuple[Path, Path]:
             f"{micro} | {micro_delta} |"
         )
     lines.append("")
-    markdown_path = eval_root / "aci_ablation_summary.md"
+    markdown_path = eval_root / markdown_name
     markdown_path.write_text("\n".join(lines), encoding="utf-8")
     print(markdown_path.read_text(encoding="utf-8"))
     return csv_path, markdown_path
 
 
-def _evaluation_args(args: argparse.Namespace, task: str) -> list[str]:
-    experiments = [item for item in ACI_ABLATION_PRESETS if item.task == task]
-    variants = ["target", *(item.variant for item in experiments)]
+def _evaluation_args(args: argparse.Namespace, task: str, experiment_matrix) -> list[str]:
+    task_experiments = [item for item in experiment_matrix if item.task == task]
+    variants = ["target", *(item.variant for item in task_experiments)]
     child = [
         "--tasks",
         task,
@@ -222,7 +233,7 @@ def _evaluation_args(args: argparse.Namespace, task: str) -> list[str]:
         child.extend(("--lm-eval-repo", str(args.lm_eval_repo)))
     if args.malay_token:
         child.extend(("--malay-token", args.malay_token))
-    for experiment in experiments:
+    for experiment in task_experiments:
         model = (
             args.results_root
             / aci_run_name(task, experiment.beta, experiment.fusion_mode)
@@ -232,12 +243,20 @@ def _evaluation_args(args: argparse.Namespace, task: str) -> list[str]:
     return child
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def evaluate_experiments(
+    args: argparse.Namespace,
+    experiments,
+    *,
+    method: str,
+    manifest_name: str,
+    csv_name: str,
+    markdown_name: str,
+    title: str,
+) -> int:
     if not args.gpus:
         raise SystemExit("Provide at least one GPU")
     manifest = {
-        "method": "aci_module_ablation_evaluation",
+        "method": method,
         "comparison": "target_only",
         "thai_xquad_metric": "f1",
         "experiments": [
@@ -258,25 +277,45 @@ def main(argv: list[str] | None = None) -> int:
                     ).resolve()
                 ),
             }
-            for experiment in ACI_ABLATION_PRESETS
+            for experiment in experiments
         ],
     }
     args.eval_root.mkdir(parents=True, exist_ok=True)
-    (args.eval_root / "ablation_manifest.json").write_text(
+    (args.eval_root / manifest_name).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     if not args.summarize_only:
         for task in TASK_PRESETS:
-            return_code = evaluate_main(_evaluation_args(args, task))
+            return_code = evaluate_main(_evaluation_args(args, task, experiments))
             if return_code:
                 return return_code
     try:
-        summarize(args.eval_root, args.scope)
+        summarize(
+            args.eval_root,
+            args.scope,
+            experiments,
+            csv_name=csv_name,
+            markdown_name=markdown_name,
+            title=title,
+        )
     except (FileNotFoundError, KeyError, ValueError, json.JSONDecodeError) as error:
         print(f"Unable to summarize ablations: {error}", file=sys.stderr)
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return evaluate_experiments(
+        args,
+        ACI_ABLATION_PRESETS,
+        method="aci_module_ablation_evaluation",
+        manifest_name="ablation_manifest.json",
+        csv_name="aci_ablation_scores.csv",
+        markdown_name="aci_ablation_summary.md",
+        title="ACI attention/FFN ablation vs target",
+    )
 
 
 if __name__ == "__main__":

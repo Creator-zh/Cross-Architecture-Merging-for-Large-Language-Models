@@ -151,9 +151,48 @@ python scripts/evaluate_aci_ablations.py \
   --summarize-only
 ```
 
-单任务通用入口也支持 `--fusion-mode full|attention|ffn`；省略时仍为原来的 `full`。
+单任务通用入口支持 `--fusion-mode full|attention|ffn|ffn_safe|attention_circuit|safe_combined`；省略时仍为原来的 `full`。
 
-## 5. 可选 SFT 对比
+## 5. 安全 FFN 与电路 Attention 的优先 9-run
+
+固定矩阵对每个领域运行三种新模式，并保持 Medical 0.03、Thai 0.01、Malay 0.10 不变：
+
+```bash
+python scripts/run_aci_safe_experiments.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci
+```
+
+三种模式严格定义如下：
+
+- `ffn_safe`：仅注入 FFN；按完整 SwiGLU 神经元投影目标冲突，并按匹配余弦门控；
+- `attention_circuit`：仅注入 Attention；按 QK/OV 功能电路匹配与 gauge 对齐，再按 GQA 组投影冲突并按 head 置信度门控；
+- `safe_combined`：同时使用上述两条路径。
+
+输出共 9 个互不覆盖的目录，例如 `medical_aci_ffn_safe_beta0.03/`、`thai_aci_attention_circuit_beta0.01/` 和 `malay_aci_safe_combined_beta0.1/`。启动清单写入 `merge_results/aci/safe_launch_manifest.json`，日志写入 `merge_results/aci/logs/safe/`。
+
+评测并与同批次 target 汇总：
+
+```bash
+python scripts/evaluate_aci_safe_experiments.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci \
+  --eval-root ./evaluation_results/aci_safe \
+  --lm-eval-repo /path/to/lm-evaluation-harness \
+  --malay-repo ./evaluation/malay/MalayMMLU
+```
+
+汇总输出为 `aci_safe_scores.csv` 和 `aci_safe_summary.md`。已有评测只重新汇总时使用：
+
+```bash
+python scripts/evaluate_aci_safe_experiments.py \
+  --eval-root ./evaluation_results/aci_safe \
+  --summarize-only
+```
+
+## 6. 可选 SFT 对比
 
 SFT 不属于无数据 ACI 主方法，只作为独立对比：
 
@@ -178,15 +217,15 @@ python scripts/evaluate_aci_tasks.py \
   --eval-root ./evaluation_results/aci_with_sft
 ```
 
-## 6. 诊断检查
+## 7. 诊断检查
 
 每个运行目录优先检查：
 
 1. `run_report.json` 中 `data_free_contract` 四项是否满足；
 2. `anchor.orthogonality_error` 是否接近浮点误差；
-3. `diagnostics/attention_matches.jsonl` 是否为完整的一一 GQA/head 置换；
-4. `diagnostics/ffn_matches.jsonl` 的 `reused_sources` 是否恒为 0；
-5. `diagnostics/injections.jsonl` 的 `relative_update_norm` 是否均不大于 β；
+3. `attention_circuit` 的 `attention_matches.jsonl` 是否为完整双射，且 QK/OV 的 `gauge_cosine_after` 不低于 `before`；
+4. `ffn_matches.jsonl` 的 `reused_sources` 是否恒为 0，并记录 `positive_match_fraction`；
+5. `injections.jsonl` 的联合相对更新是否不大于 β，同时检查置信度与冲突比例是否退化到全 0 或全 1；
 6. tokenizer 文件是否从目标模型目录复制到 `fused_model/`。
 
 旧 `evaluation_results/dfop_*` 与 `transport_results/dfop/` 只用于追溯旧实验，不能与新输出混用。

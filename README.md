@@ -9,18 +9,20 @@
 
 ## ACI 一句话方法
 
-ACI 使用同架构通用 1B checkpoint \(W_0\) 作为保护锚点，把 8B 源模型结构化压缩为 \(\mathcal C(W_S)\)，然后对七个 Transformer 线性模块执行：
+ACI 使用同架构通用 1B checkpoint \(W_0\) 作为保护锚点，把 8B 源模型结构化压缩为 \(\mathcal C(W_S)\)。旧 `full/attention/ffn` 模式保留原始受限注入：
 
 \[
 W_{out}=W_T+\beta\bigl(\mathcal C(W_S)-W_0\bigr).
 \]
 
-因此目标领域任务向量 \(W_T-W_0\) 的系数保持为 1。模型只修改 Q/K/V/O/Gate/Up/Down；embedding、LM head、norm、tokenizer、参数形状和推理架构保持目标模型原值。
+当前优先验证的 `safe_combined` 在此基础上增加两层保护：FFN 先按完整 SwiGLU 神经元投影掉与目标领域增量冲突的分量，再按匹配余弦逐神经元门控；Attention 不再比较单个 Q/K/V/O 因子，而是匹配 QK 与 OV 功能电路，做保持电路功能不变的 gauge 对齐，再按 GQA 组投影冲突并按 head 置信度门控。
+
+因此目标领域任务向量 \(W_T-W_0\) 的系数保持为 1，同时低置信或与目标方向冲突的源更新会被自动削弱。模型只修改 Q/K/V/O/Gate/Up/Down；embedding、LM head、norm、tokenizer、参数形状和推理架构保持目标模型原值。
 
 压缩包含三个固定结构规则：
 
 - **全局坐标**：用共享词表的 embedding/lm-head 权重求一个矩形正交残差映射；
-- **Attention**：固定相对深度，按相同 RoPE 基频压缩 128→64 head dimension，并让 Q/K/V/O 共享 GQA 组与 query-head 一一匹配；
+- **Attention**：固定相对深度，按相同 RoPE 基频压缩 128→64 head dimension，以 QK/OV 电路而非裸因子匹配 GQA 组与 query head，并对齐 QK 的 RoPE gauge 与 OV 的正交 gauge；
 - **FFN**：Gate 行、Up 行和 Down 列组成不可拆分的 SwiGLU 神经元，三者共享同一个无重复匹配。
 
 没有 OT、Sinkhorn、自由层路由、rank、top-k、temperature 或独立 trust-ratio。唯一效果超参数是每个任务的注入强度 β。
@@ -93,6 +95,25 @@ python scripts/evaluate_aci_ablations.py \
 
 消融只与同批次 target 比较；Thai 使用 XQuAD F1，Medical 同时报告 macro 和按题数加权的 micro。`attention` 模式完全不计算或修改 FFN，`ffn` 模式完全不计算或修改 Attention。
 
+优先验证的新方法固定生成 9 个 checkpoint：每个领域各运行 `ffn_safe`、`attention_circuit` 和 `safe_combined`，并使用该领域原预注册 β：
+
+```bash
+python scripts/run_aci_safe_experiments.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci
+
+python scripts/evaluate_aci_safe_experiments.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci \
+  --eval-root ./evaluation_results/aci_safe \
+  --lm-eval-repo /path/to/lm-evaluation-harness \
+  --malay-repo ./evaluation/malay/MalayMMLU
+```
+
+这 9 组只与同批次 target 比较。服务器实验的判断顺序是：先确认 `ffn_safe` 是否稳定保留原 FFN 收益，再看 `attention_circuit` 能否消除旧 Attention 的退化，最后检验 `safe_combined` 是否有可叠加收益。
+
 主验收标准是 Medical、Thai、Malay 三个领域宏平均分别超过原目标模型；不把三个领域合并成一个总平均。仓库当前尚未包含 ACI 的服务器评测结果，因此不预先声称提升。
 
 ## 可选 SFT
@@ -115,6 +136,7 @@ core/aci/
 ├── attention.py       # head/RoPE 保持的 attention 压缩
 ├── ffn.py             # Gate/Up/Down 联合神经元匹配
 ├── injection.py       # 领域任务向量保护注入
+├── safe_injection.py  # FFN 神经元与 QK/OV 电路的冲突投影/置信门控
 ├── pipeline.py        # 三步主流程与诊断
 ├── presets.py         # Medical/Thai/Malay 模型、β 与评测预设
 └── config.py          # 一个效果参数 + 数值批处理参数
@@ -123,8 +145,10 @@ scripts/
 ├── run_aci_merge.py       # 单任务合并
 ├── run_aci_tasks.py       # 双 GPU 三任务调度
 ├── run_aci_ablations.py   # 固定 8-run Attention/FFN 消融
+├── run_aci_safe_experiments.py # 固定 9-run 安全融合实验
 ├── evaluate_aci_tasks.py  # merge-only 统一评测
 ├── evaluate_aci_ablations.py # 消融评测与 target 对比汇总
+├── evaluate_aci_safe_experiments.py # 新 9-run 的 target 对比汇总
 ├── run_aci_sft_tasks.py   # 可选 SFT 对比
 └── summarize_merge_results.py
 ```

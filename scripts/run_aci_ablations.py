@@ -111,14 +111,20 @@ def _command(
     return command, output
 
 
-def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+def run_experiments(
+    args: argparse.Namespace,
+    experiments: tuple[ACIAblationPreset, ...],
+    *,
+    method: str,
+    manifest_name: str,
+    log_subdirectory: str,
+) -> int:
     try:
         if not args.gpus:
             raise ValueError("Provide at least one GPU")
         jobs = [
             (experiment, *_command(args, experiment))
-            for experiment in ACI_ABLATION_PRESETS
+            for experiment in experiments
         ]
         outputs = [str(output) for _, _, output in jobs]
         if len(outputs) != len(set(outputs)):
@@ -127,10 +133,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(error)) from error
 
     args.results_root.mkdir(parents=True, exist_ok=True)
-    log_root = args.results_root / "logs" / "ablations"
+    log_root = args.results_root / "logs" / log_subdirectory
     log_root.mkdir(parents=True, exist_ok=True)
     manifest = {
-        "method": "aci_module_ablation",
+        "method": method,
         "gpus": args.gpus,
         "experiments": [
             {
@@ -144,7 +150,7 @@ def main(argv: list[str] | None = None) -> int:
             for experiment, command, output in jobs
         ],
     }
-    (args.results_root / "ablation_launch_manifest.json").write_text(
+    (args.results_root / manifest_name).write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
@@ -222,6 +228,17 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps({"failures": failures}, ensure_ascii=False, indent=2))
         return 1
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = build_parser().parse_args(argv)
+    return run_experiments(
+        args,
+        ACI_ABLATION_PRESETS,
+        method="aci_module_ablation",
+        manifest_name="ablation_launch_manifest.json",
+        log_subdirectory="ablations",
+    )
 
 
 if __name__ == "__main__":

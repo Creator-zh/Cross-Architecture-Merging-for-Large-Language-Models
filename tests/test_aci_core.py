@@ -9,8 +9,11 @@ import torch.nn as nn
 
 from core.aci.alignment import build_residual_anchor, deterministic_anchor_indices
 from core.aci.attention import (
+    _align_ov_gauge,
+    _align_qk_rope_gauge,
     attention_geometry,
     contract_attention,
+    contract_attention_circuit,
     rope_frequency_indices,
 )
 from core.aci.config import ACIConfig
@@ -18,6 +21,7 @@ from core.aci.ffn import contract_ffn
 from core.aci.injection import inject_protected_delta
 from core.aci.pipeline import monotonic_layer_groups, run_aci_pipeline
 from core.aci.registry import block_linears
+from core.aci.safe_injection import inject_safe_attention, inject_safe_ffn
 
 
 class _TinyAttention(nn.Module):
@@ -211,6 +215,96 @@ class StructureTests(unittest.TestCase):
         self.assertEqual(torch.unique(match.group_assignment).numel(), 2)
         self.assertEqual(torch.unique(match.query_assignment).numel(), 4)
 
+    def test_circuit_matching_aligns_gauges_and_returns_head_confidence(self):
+        torch.manual_seed(9)
+        source_model = _source_model()
+        reference_model = _reference_model()
+        projection, _ = torch.linalg.qr(torch.randn(8, 4))
+        basis, _ = torch.linalg.qr(torch.randn(4, 2))
+        attention, match = contract_attention_circuit(
+            block_linears(source_model.layers[0]),
+            block_linears(reference_model.layers[0]),
+            projection,
+            basis,
+            attention_geometry(source_model),
+            attention_geometry(reference_model),
+        )
+        self.assertEqual(tuple(attention["q"].shape), (4, 4))
+        self.assertEqual(tuple(attention["k"].shape), (2, 4))
+        self.assertEqual(tuple(match.head_confidences.shape), (2,))
+        self.assertGreaterEqual(
+            match.qk_gauge_cosine_after + 1.0e-6,
+            match.qk_gauge_cosine_before,
+        )
+        self.assertGreaterEqual(
+            match.ov_gauge_cosine_after + 1.0e-6,
+            match.ov_gauge_cosine_before,
+        )
+
+    def test_gauge_alignment_preserves_qk_and_ov_circuits(self):
+        torch.manual_seed(10)
+        geometry = attention_geometry(_reference_model())
+        basis = torch.eye(geometry.hidden_size)
+        q = torch.randn(
+            geometry.query_heads * geometry.head_dim,
+            geometry.hidden_size,
+        )
+        k = torch.randn(
+            geometry.kv_heads * geometry.head_dim,
+            geometry.hidden_size,
+        )
+        v = torch.randn_like(k)
+        o = torch.randn(
+            geometry.hidden_size,
+            geometry.query_heads * geometry.head_dim,
+        )
+        aligned_q, aligned_k, _, _ = _align_qk_rope_gauge(
+            q,
+            k,
+            torch.randn_like(q),
+            torch.randn_like(k),
+            geometry,
+            basis,
+            eps=1.0e-8,
+        )
+        aligned_v, aligned_o, _, _ = _align_ov_gauge(
+            v,
+            o,
+            torch.randn_like(v),
+            torch.randn_like(o),
+            geometry,
+            basis,
+            eps=1.0e-8,
+        )
+        left = torch.randn(geometry.hidden_size)
+        right = torch.randn(geometry.hidden_size)
+        angle_q, angle_k = 0.37, -0.22
+        rope_q = torch.tensor(
+            [
+                [torch.cos(torch.tensor(angle_q)), -torch.sin(torch.tensor(angle_q))],
+                [torch.sin(torch.tensor(angle_q)), torch.cos(torch.tensor(angle_q))],
+            ]
+        )
+        rope_k = torch.tensor(
+            [
+                [torch.cos(torch.tensor(angle_k)), -torch.sin(torch.tensor(angle_k))],
+                [torch.sin(torch.tensor(angle_k)), torch.cos(torch.tensor(angle_k))],
+            ]
+        )
+        for head in range(geometry.query_heads):
+            q_slice = slice(head * geometry.head_dim, (head + 1) * geometry.head_dim)
+            before_qk = (rope_q @ (q[q_slice] @ left)) @ (
+                rope_k @ (k @ right)
+            )
+            after_qk = (rope_q @ (aligned_q[q_slice] @ left)) @ (
+                rope_k @ (aligned_k @ right)
+            )
+            self.assertTrue(torch.allclose(before_qk, after_qk, atol=1.0e-5))
+            o_slice = slice(head * geometry.head_dim, (head + 1) * geometry.head_dim)
+            before_ov = o[:, o_slice] @ (v @ right)
+            after_ov = aligned_o[:, o_slice] @ (aligned_v @ right)
+            self.assertTrue(torch.allclose(before_ov, after_ov, atol=1.0e-5))
+
     def test_layer_groups_are_monotonic_and_exhaustive(self):
         self.assertEqual(
             monotonic_layer_groups(4, 8),
@@ -245,6 +339,70 @@ class InjectionTests(unittest.TestCase):
             beta=0.0,
         )
         self.assertTrue(torch.equal(result.weight, target))
+
+    def test_safe_ffn_projects_conflicts_and_respects_neuron_gate(self):
+        reference = {
+            "gate": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            "up": torch.tensor([[1.0, 0.0], [0.0, 1.0]]),
+            "down": torch.eye(2),
+        }
+        target = {name: 2.0 * value for name, value in reference.items()}
+        source = {name: torch.zeros_like(value) for name, value in reference.items()}
+        result = inject_safe_ffn(
+            target,
+            reference,
+            source,
+            torch.tensor([1.0, 0.0]),
+            beta=0.1,
+            eps=1.0e-8,
+        )
+        self.assertEqual(result.conflict_fraction, 1.0)
+        self.assertAlmostEqual(result.removed_conflict_norm_ratio, 1.0, places=5)
+        for name in ("gate", "up", "down"):
+            self.assertTrue(torch.allclose(result.weights[name], target[name]))
+
+        swapped = {
+            "gate": torch.flip(reference["gate"], dims=(0,)),
+            "up": torch.flip(reference["up"], dims=(0,)),
+            "down": torch.flip(reference["down"], dims=(1,)),
+        }
+        gated = inject_safe_ffn(
+            reference,
+            reference,
+            swapped,
+            torch.tensor([1.0, 0.0]),
+            beta=0.1,
+            eps=1.0e-8,
+        )
+        self.assertFalse(torch.equal(gated.weights["gate"][0], reference["gate"][0]))
+        self.assertFalse(torch.equal(gated.weights["up"][0], reference["up"][0]))
+        self.assertFalse(torch.equal(gated.weights["down"][:, 0], reference["down"][:, 0]))
+        self.assertTrue(torch.equal(gated.weights["gate"][1], reference["gate"][1]))
+        self.assertTrue(torch.equal(gated.weights["up"][1], reference["up"][1]))
+        self.assertTrue(torch.equal(gated.weights["down"][:, 1], reference["down"][:, 1]))
+
+    def test_safe_attention_zero_confidence_is_identity(self):
+        model = _reference_model()
+        geometry = attention_geometry(model)
+        block = block_linears(model.layers[0]).as_dict()
+        target = {
+            name: block[name].weight.detach().clone()
+            for name in ("q", "k", "v", "o")
+        }
+        reference = {name: value - 0.01 for name, value in target.items()}
+        source = {name: torch.randn_like(value) for name, value in target.items()}
+        result = inject_safe_attention(
+            target,
+            reference,
+            source,
+            torch.zeros(geometry.query_heads),
+            geometry,
+            beta=0.1,
+            eps=1.0e-8,
+        )
+        for name in ("q", "k", "v", "o"):
+            self.assertTrue(torch.equal(result.weights[name], target[name]))
+        self.assertEqual(result.joint_relative_update_norm, 0.0)
 
 
 class PipelineTests(unittest.TestCase):
@@ -367,6 +525,111 @@ class PipelineTests(unittest.TestCase):
             {"gate", "up", "down"},
         )
         self.assertEqual(result.report["fusion_mode"], "ffn")
+
+    def test_ffn_safe_uses_target_aware_group_injection(self):
+        torch.manual_seed(19)
+        reference = _reference_model()
+        target = _reference_model()
+        target.load_state_dict(reference.state_dict())
+        source = _source_model()
+        attention_before = {
+            name: parameter.detach().clone()
+            for name, parameter in target.layers[0].self_attn.named_parameters()
+        }
+        result = run_aci_pipeline(
+            target,
+            reference,
+            source,
+            ACIConfig(
+                beta=0.05,
+                fusion_mode="ffn_safe",
+                anchor_tokens=16,
+                anchor_chunk_size=5,
+                ffn_sketch_dim=2,
+                ffn_candidate_k=4,
+            ),
+            compute_device="cpu",
+        )
+        for name, parameter in target.layers[0].self_attn.named_parameters():
+            self.assertTrue(torch.equal(attention_before[name], parameter))
+        self.assertEqual(len(result.injection_diagnostics), 6)
+        self.assertEqual(
+            {row["injection_mode"] for row in result.injection_diagnostics},
+            {"safe_ffn"},
+        )
+        self.assertTrue(
+            all(
+                row["joint_relative_update_norm"] <= 0.050001
+                for row in result.injection_diagnostics
+            )
+        )
+
+    def test_attention_circuit_does_not_touch_ffn(self):
+        torch.manual_seed(23)
+        reference = _reference_model()
+        target = _reference_model()
+        target.load_state_dict(reference.state_dict())
+        source = _source_model()
+        ffn_before = {
+            name: parameter.detach().clone()
+            for name, parameter in target.layers[0].mlp.named_parameters()
+        }
+        result = run_aci_pipeline(
+            target,
+            reference,
+            source,
+            ACIConfig(
+                beta=0.05,
+                fusion_mode="attention_circuit",
+                anchor_tokens=16,
+                anchor_chunk_size=5,
+                ffn_sketch_dim=2,
+                ffn_candidate_k=4,
+            ),
+            compute_device="cpu",
+        )
+        for name, parameter in target.layers[0].mlp.named_parameters():
+            self.assertTrue(torch.equal(ffn_before[name], parameter))
+        self.assertEqual(len(result.injection_diagnostics), 8)
+        self.assertEqual(
+            {row["injection_mode"] for row in result.injection_diagnostics},
+            {"safe_attention_circuit"},
+        )
+        self.assertEqual(
+            {row["matching_mode"] for row in result.attention_diagnostics},
+            {"qk_ov_circuit"},
+        )
+        self.assertTrue(
+            all(
+                row["joint_relative_update_norm"] <= 0.050001
+                for row in result.injection_diagnostics
+            )
+        )
+
+    def test_safe_combined_uses_both_safe_paths(self):
+        torch.manual_seed(29)
+        reference = _reference_model()
+        target = _reference_model()
+        target.load_state_dict(reference.state_dict())
+        result = run_aci_pipeline(
+            target,
+            reference,
+            _source_model(),
+            ACIConfig(
+                beta=0.05,
+                fusion_mode="safe_combined",
+                anchor_tokens=16,
+                anchor_chunk_size=5,
+                ffn_sketch_dim=2,
+                ffn_candidate_k=4,
+            ),
+            compute_device="cpu",
+        )
+        self.assertEqual(len(result.injection_diagnostics), 14)
+        self.assertEqual(
+            {row["injection_mode"] for row in result.injection_diagnostics},
+            {"safe_attention_circuit", "safe_ffn"},
+        )
 
 
 if __name__ == "__main__":
