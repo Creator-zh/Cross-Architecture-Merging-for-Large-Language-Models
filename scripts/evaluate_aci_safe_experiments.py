@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Evaluate the fixed ACI safe FFN/circuit-attention matrix against target."""
+"""Evaluate legacy FFN and circuit-attention variants against target."""
 
 from __future__ import annotations
 
@@ -31,7 +31,7 @@ def main(argv: list[str] | None = None) -> int:
         manifest_name="safe_manifest.json",
         csv_name="aci_safe_scores.csv",
         markdown_name="aci_safe_summary.md",
-        title="ACI safe FFN and circuit-attention vs target",
+        title="ACI legacy FFN and circuit-attention vs target",
     )
 
 

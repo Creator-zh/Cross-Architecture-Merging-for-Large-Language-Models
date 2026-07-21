@@ -60,9 +60,5 @@ class ACIConfig:
         return self.fusion_mode in ("full", "ffn", "ffn_safe", "safe_combined")
 
     @property
-    def uses_safe_ffn(self) -> bool:
-        return self.fusion_mode in ("ffn_safe", "safe_combined")
-
-    @property
     def uses_circuit_attention(self) -> bool:
         return self.fusion_mode in ("attention_circuit", "safe_combined")

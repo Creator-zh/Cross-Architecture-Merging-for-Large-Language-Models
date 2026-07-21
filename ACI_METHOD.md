@@ -150,7 +150,7 @@ $$
 
 其中 $\mathcal{C}$ 是结构保持的异构压缩算子，$\beta$ 是唯一直接控制融合效果的超参数。这是旧模式与新安全模式共享的概念主式。
 
-代码还会对上式的更新量施加由权重自动确定的安全操作。旧 `full/attention/ffn` 使用第 9.2 节的逐张量范数上限；当前优先验证的 `ffn_safe/attention_circuit/safe_combined` 还使用第 9.4–9.5 节的目标冲突投影与匹配置信门控。
+代码还会对上式的更新量施加由权重自动确定的安全操作。`full/attention/ffn` 使用第 9.2 节的逐张量范数上限；`ffn_safe` 现作为 `ffn` 的兼容别名，`safe_combined` 的 FFN 分支也恢复为相同的原始注入。`attention_circuit` 与 `safe_combined` 仅在 Attention 分支使用第 9.5 节的目标冲突投影与匹配置信门控。
 
 ## 6. Anchor：建立全局 residual 坐标映射
 
@@ -281,13 +281,9 @@ $$
 
 ### 7.2 Attention 的 RoPE 坐标压缩
 
-当前源模型和目标模型的 query-head 数与 KV-head 数相同，但源 head dimension 是目标的两倍。ACI 只选择具有对应 RoPE 基频的源坐标。
+当前源模型和目标模型的 query-head 数与 KV-head 数相同，但源 head dimension 大于目标。ACI 从两端模型配置的真实 `rope_theta`、`rope_type` 和 `rope_scaling` 复算 Q/K 的 inverse frequencies。随后在保持频率顺序与一一对应的约束下，求解最小绝对 log-frequency 误差的源频率匹配。因而 Llama-3.1 8B 的 factor=8 与 Llama-3.2 1B 的 factor=32 不再被错误视为相同 RoPE。
 
-对 $128\rightarrow64$，每个 head 选择：
-
-```text
-[0, 2, 4, ..., 62, 64, 66, 68, ..., 126]
-```
+V/O 不参与 RoPE。它们使用独立的均匀宽度坐标收缩，不复用 Q/K 的频率匹配结果。
 
 记单个 head 的频率选择矩阵为：
 
@@ -602,9 +598,9 @@ $$
 
 需要注意：系数保持为 $1$ 只表示“不在线性公式中主动削弱领域增量”，并不构成对所有评测任务必然提升的数学保证。新增源增量仍可能与领域能力发生干扰，最终效果必须通过服务器实验验证。
 
-### 9.4 FFN：目标冲突投影与神经元置信门控
+### 9.4 FFN：目标冲突投影与神经元置信门控（历史方案，当前未启用）
 
-`ffn_safe` 不再把 Gate、Up、Down 当作三个独立更新。对第 $j$ 个完整 SwiGLU 神经元，记源能力增量和目标领域增量分别为：
+以下定义保留用于解释已归档的 safe-FFN 实验。当前 `ffn_safe` 已恢复为原 `ffn` 注入，不再执行本节的冲突投影或置信门控。历史方案对第 $j$ 个完整 SwiGLU 神经元定义源能力增量和目标领域增量为：
 
 $$
 s_j=
@@ -731,7 +727,7 @@ $$
 
 Q 和 O 使用逐 head 的 $q_{gq}$；共享的 K 和 V 使用组内置信度均值。目标冲突投影分别在每个 GQA 组的联合 $(Q,K)$ 因子和联合 $(V,O)$ 因子上执行，公式与第 9.4 节相同。最后 QK 与 OV 各共享一个自动范数上限，避免破坏成对因子关系。
 
-`safe_combined` 同时启用第 9.4 与第 9.5 节；没有新增需要搜索的效果超参数。
+`safe_combined` 对 FFN 使用第 9.2 节的原始逐张量受限注入，对 Attention 使用第 9.5 节；没有新增需要搜索的效果超参数。
 
 ## 10. 完整算法
 
@@ -853,7 +849,7 @@ $$
 1. 原领域目标模型 `target`；
 2. 同架构通用参考模型 `reference`；
 3. 8B 异构源模型 `source`；
-4. 无数据融合模型 `ffn_safe`、`attention_circuit` 和 `safe_combined`。
+4. 无数据融合模型 `ffn`（`ffn_safe` 为兼容别名）、`attention_circuit` 和 `safe_combined`。
 
 可选的 `aci_sft` 只作为独立对比，不属于无数据 ACI 主方法。
 

@@ -13,6 +13,7 @@ from .attention import (
     attention_geometry,
     contract_attention,
     contract_attention_circuit,
+    rope_frequency_indices,
     validate_attention_pair,
 )
 from .config import ACIConfig
@@ -27,7 +28,7 @@ from .registry import (
     input_embedding,
     output_head,
 )
-from .safe_injection import inject_safe_attention, inject_safe_ffn
+from .safe_injection import inject_safe_attention
 
 
 LOGGER = logging.getLogger(__name__)
@@ -171,15 +172,6 @@ def run_aci_pipeline(
             )
             for module in active_modules
         }
-        ffn_confidence = (
-            torch.zeros(
-                reference_block.gate.weight.shape[0],
-                device=device,
-                dtype=torch.float32,
-            )
-            if config.uses_safe_ffn
-            else None
-        )
         attention_confidence = (
             torch.zeros(
                 reference_geometry.query_heads,
@@ -269,11 +261,6 @@ def run_aci_pipeline(
                 )
                 for module, value in ffn.items():
                     compressed[module].add_(value, alpha=source_weight)
-                if ffn_confidence is not None:
-                    ffn_confidence.add_(
-                        match.selected_cosines.to(device, torch.float32),
-                        alpha=source_weight,
-                    )
                 ffn_diagnostics.append(
                     {
                         "target_layer": target_index,
@@ -370,66 +357,12 @@ def run_aci_pipeline(
                 del compressed[module]
             del safe_attention, attention_confidence
 
-        if config.uses_safe_ffn:
-            if ffn_confidence is None:
-                raise AssertionError("safe FFN mode requires accumulated confidence")
-            target_weights = {
-                module: target_block.as_dict()[module].weight
-                for module in FFN_MODULE_TYPES
-            }
-            reference_weights = {
-                module: reference_block.as_dict()[module].weight
-                for module in FFN_MODULE_TYPES
-            }
-            safe_ffn = inject_safe_ffn(
-                target_weights,
-                reference_weights,
-                {module: compressed[module] for module in FFN_MODULE_TYPES},
-                ffn_confidence,
-                beta=config.beta,
-                eps=config.eps,
-            )
-            for module in FFN_MODULE_TYPES:
-                target_linear = target_block.as_dict()[module]
-                if apply_updates:
-                    target_linear.weight.copy_(
-                        safe_ffn.weights[module].to(
-                            device=target_linear.weight.device,
-                            dtype=target_linear.weight.dtype,
-                        )
-                    )
-                injection_diagnostics.append(
-                    {
-                        "target_layer": target_index,
-                        "source_layers": source_indices,
-                        "module": module,
-                        "injection_mode": "safe_ffn",
-                        "calibration_scale": safe_ffn.calibration_scales[module],
-                        "trust_coefficient": safe_ffn.trust_coefficient,
-                        "relative_update_norm": safe_ffn.module_relative_update_norms[module],
-                        "joint_relative_update_norm": safe_ffn.joint_relative_update_norm,
-                        "mean_confidence": safe_ffn.mean_confidence,
-                        "minimum_confidence": safe_ffn.minimum_confidence,
-                        "maximum_confidence": safe_ffn.maximum_confidence,
-                        "active_confidence_fraction": safe_ffn.active_confidence_fraction,
-                        "conflict_fraction": safe_ffn.conflict_fraction,
-                        "source_domain_cosine": safe_ffn.source_domain_cosine,
-                        "removed_conflict_norm_ratio": safe_ffn.removed_conflict_norm_ratio,
-                        "applied": apply_updates,
-                    }
-                )
-                del compressed[module]
-            del safe_ffn, ffn_confidence
-
         standard_modules = tuple(
             module
             for module in active_modules
             if not (
-                (config.uses_safe_ffn and module in FFN_MODULE_TYPES)
-                or (
-                    config.uses_circuit_attention
-                    and module in ATTENTION_MODULE_TYPES
-                )
+                config.uses_circuit_attention
+                and module in ATTENTION_MODULE_TYPES
             )
         )
         for module in standard_modules:
@@ -454,6 +387,7 @@ def run_aci_pipeline(
                     "target_layer": target_index,
                     "source_layers": source_indices,
                     "module": module,
+                    "injection_mode": "legacy_tensor",
                     "calibration_scale": injection.calibration_scale,
                     "trust_coefficient": injection.trust_coefficient,
                     "relative_update_norm": injection.relative_update_norm,
@@ -464,6 +398,32 @@ def run_aci_pipeline(
         _empty_cache(device)
 
     finished = time.perf_counter()
+    rope_mapping = None
+    if config.uses_attention:
+        pair_count = reference_geometry.head_dim // 2
+        pair_indices = rope_frequency_indices(
+            source_geometry, reference_geometry
+        )[:pair_count]
+        source_inverse = torch.tensor(
+            source_geometry.rope_inverse_frequencies,
+            dtype=torch.float64,
+        )
+        reference_inverse = torch.tensor(
+            reference_geometry.rope_inverse_frequencies,
+            dtype=torch.float64,
+        )
+        log_error = (
+            source_inverse[pair_indices].log() - reference_inverse.log()
+        ).abs()
+        rope_mapping = {
+            "source_type": source_geometry.rope_type,
+            "reference_type": reference_geometry.rope_type,
+            "source_rotary_dim": source_geometry.rotary_dim,
+            "reference_rotary_dim": reference_geometry.rotary_dim,
+            "source_pair_indices": pair_indices.tolist(),
+            "mean_absolute_log_frequency_error": float(log_error.mean()),
+            "maximum_absolute_log_frequency_error": float(log_error.max()),
+        }
     report = {
         "method": "anchor_compress_inject",
         "beta": config.beta,
@@ -478,9 +438,7 @@ def run_aci_pipeline(
                 else "disabled"
             ),
             "ffn": (
-                "joint_neuron_conflict_gate"
-                if config.uses_safe_ffn
-                else "joint_neuron_match"
+                "joint_neuron_match_legacy_injection"
                 if config.uses_ffn
                 else "disabled"
             ),
@@ -490,6 +448,7 @@ def run_aci_pipeline(
         "layer_groups": groups,
         "compute_device": str(device),
         "apply_updates": apply_updates,
+        "rope_frequency_mapping": rope_mapping,
         "anchor": {
             "count": anchor.anchor_count,
             "input_cosine": anchor.input_anchor_cosine,

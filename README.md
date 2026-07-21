@@ -15,14 +15,14 @@ ACI 使用同架构通用 1B checkpoint \(W_0\) 作为保护锚点，把 8B 源�
 W_{out}=W_T+\beta\bigl(\mathcal C(W_S)-W_0\bigr).
 \]
 
-当前优先验证的 `safe_combined` 在此基础上增加两层保护：FFN 先按完整 SwiGLU 神经元投影掉与目标领域增量冲突的分量，再按匹配余弦逐神经元门控；Attention 不再比较单个 Q/K/V/O 因子，而是匹配 QK 与 OV 功能电路，做保持电路功能不变的 gauge 对齐，再按 GQA 组投影冲突并按 head 置信度门控。
+当前 `safe_combined` 使用原始 FFN-only 注入，并只在 Attention 分支增加 circuit-aware 保护：Attention 不再比较单个 Q/K/V/O 因子，而是匹配 QK 与 OV 功能电路，做保持电路功能不变的 gauge 对齐，再按 GQA 组投影冲突并按 head 置信度门控。`ffn_safe` 名称仅作为旧实验脚本的兼容别名，其行为与 `ffn` 相同。
 
 因此目标领域任务向量 \(W_T-W_0\) 的系数保持为 1，同时低置信或与目标方向冲突的源更新会被自动削弱。模型只修改 Q/K/V/O/Gate/Up/Down；embedding、LM head、norm、tokenizer、参数形状和推理架构保持目标模型原值。
 
 压缩包含三个固定结构规则：
 
 - **全局坐标**：用共享词表的 embedding/lm-head 权重求一个矩形正交残差映射；
-- **Attention**：固定相对深度，按相同 RoPE 基频压缩 128→64 head dimension，以 QK/OV 电路而非裸因子匹配 GQA 组与 query head，并对齐 QK 的 RoPE gauge 与 OV 的正交 gauge；
+- **Attention**：固定相对深度，从两端真实 `rope_theta/rope_scaling` 计算 `inv_freq`，为 Q/K 求单调最小误差频率匹配；V/O 使用独立的均匀宽度收缩，不再复用 RoPE 坐标；随后以 QK/OV 电路而非裸因子匹配 GQA 组与 query head，并对齐 QK 的 RoPE gauge 与 OV 的正交 gauge；
 - **FFN**：Gate 行、Up 行和 Down 列组成不可拆分的 SwiGLU 神经元，三者共享同一个无重复匹配。
 
 没有 OT、Sinkhorn、自由层路由、rank、top-k、temperature 或独立 trust-ratio。唯一效果超参数是每个任务的注入强度 β。
@@ -95,7 +95,7 @@ python scripts/evaluate_aci_ablations.py \
 
 消融只与同批次 target 比较；Thai 使用 XQuAD F1，Medical 同时报告 macro 和按题数加权的 micro。`attention` 模式完全不计算或修改 FFN，`ffn` 模式完全不计算或修改 Attention。
 
-优先验证的新方法固定生成 9 个 checkpoint：每个领域各运行 `ffn_safe`、`attention_circuit` 和 `safe_combined`，并使用该领域原预注册 β：
+优先验证矩阵仍固定生成 9 个 checkpoint：每个领域各运行 `ffn_safe`、`attention_circuit` 和 `safe_combined`，并使用该领域原预注册 β。为保持已有命令和结果目录兼容，`ffn_safe` 现在是原 `ffn` 的别名；`safe_combined` 也使用原 FFN-only 注入：
 
 ```bash
 python scripts/run_aci_safe_experiments.py \
@@ -112,7 +112,7 @@ python scripts/evaluate_aci_safe_experiments.py \
   --malay-repo ./evaluation/malay/MalayMMLU
 ```
 
-这 9 组只与同批次 target 比较。服务器实验的判断顺序是：先确认 `ffn_safe` 是否稳定保留原 FFN 收益，再看 `attention_circuit` 能否消除旧 Attention 的退化，最后检验 `safe_combined` 是否有可叠加收益。
+这 9 组只与同批次 target 比较。服务器实验的判断顺序是：先复现原 FFN-only 收益，再看真实 RoPE 映射后的 `attention_circuit` 能否消除旧 Attention 的退化，最后检验二者在 `safe_combined` 中是否有可叠加收益。
 
 主验收标准是 Medical、Thai、Malay 三个领域宏平均分别超过原目标模型；不把三个领域合并成一个总平均。仓库当前尚未包含 ACI 的服务器评测结果，因此不预先声称提升。
 

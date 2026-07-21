@@ -1,3 +1,4 @@
+import copy
 import tempfile
 import unittest
 from pathlib import Path
@@ -66,6 +67,8 @@ class _TinyModel(nn.Module):
         kv_heads: int,
         head_dim: int,
         vocabulary: int = 32,
+        rope_theta: float = 10_000.0,
+        rope_scaling: dict | None = None,
     ):
         super().__init__()
         self.config = SimpleNamespace(
@@ -73,6 +76,8 @@ class _TinyModel(nn.Module):
             num_attention_heads=query_heads,
             num_key_value_heads=kv_heads,
             head_dim=head_dim,
+            rope_theta=rope_theta,
+            rope_scaling=rope_scaling,
         )
         self.embed_tokens = nn.Embedding(vocabulary, hidden)
         self.layers = nn.ModuleList(
@@ -149,6 +154,56 @@ class StructureTests(unittest.TestCase):
                 torch.tensor([0, 2, 4, 6]),
             )
         )
+
+    def test_llama3_rope_selection_uses_real_scaling_frequencies(self):
+        source_model = _TinyModel(
+            layers=1,
+            hidden=128,
+            intermediate=8,
+            query_heads=1,
+            kv_heads=1,
+            head_dim=128,
+            rope_theta=500_000.0,
+            rope_scaling={
+                "factor": 8.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+        )
+        target_model = _TinyModel(
+            layers=1,
+            hidden=64,
+            intermediate=8,
+            query_heads=1,
+            kv_heads=1,
+            head_dim=64,
+            rope_theta=500_000.0,
+            rope_scaling={
+                "factor": 32.0,
+                "low_freq_factor": 1.0,
+                "high_freq_factor": 4.0,
+                "original_max_position_embeddings": 8192,
+                "rope_type": "llama3",
+            },
+        )
+        source_geometry = attention_geometry(source_model)
+        target_geometry = attention_geometry(target_model)
+        indices = rope_frequency_indices(source_geometry, target_geometry)
+        pair_indices = indices[: target_geometry.head_dim // 2]
+        legacy_pairs = torch.arange(target_geometry.head_dim // 2) * 2
+        source_inverse = torch.tensor(source_geometry.rope_inverse_frequencies)
+        target_inverse = torch.tensor(target_geometry.rope_inverse_frequencies)
+        matched_error = (
+            source_inverse[pair_indices].log() - target_inverse.log()
+        ).abs().sum()
+        legacy_error = (
+            source_inverse[legacy_pairs].log() - target_inverse.log()
+        ).abs().sum()
+        self.assertTrue(torch.all(pair_indices[1:] > pair_indices[:-1]))
+        self.assertFalse(torch.equal(pair_indices, legacy_pairs))
+        self.assertLess(float(matched_error), float(legacy_error))
 
     def test_attention_and_ffn_contract_to_reference_shapes(self):
         torch.manual_seed(5)
@@ -485,6 +540,11 @@ class PipelineTests(unittest.TestCase):
             {"q", "k", "v", "o"},
         )
         self.assertEqual(result.report["fusion_mode"], "attention")
+        self.assertIsNotNone(result.report["rope_frequency_mapping"])
+        self.assertEqual(
+            len(result.report["rope_frequency_mapping"]["source_pair_indices"]),
+            attention_geometry(reference).head_dim // 2,
+        )
 
     def test_ffn_only_never_computes_or_updates_attention(self):
         torch.manual_seed(17)
@@ -526,18 +586,29 @@ class PipelineTests(unittest.TestCase):
         )
         self.assertEqual(result.report["fusion_mode"], "ffn")
 
-    def test_ffn_safe_uses_target_aware_group_injection(self):
+    def test_ffn_safe_alias_uses_original_ffn_only_injection(self):
         torch.manual_seed(19)
         reference = _reference_model()
-        target = _reference_model()
-        target.load_state_dict(reference.state_dict())
+        target_ffn = _reference_model()
+        target_ffn.load_state_dict(reference.state_dict())
+        target_alias = copy.deepcopy(target_ffn)
         source = _source_model()
-        attention_before = {
-            name: parameter.detach().clone()
-            for name, parameter in target.layers[0].self_attn.named_parameters()
-        }
-        result = run_aci_pipeline(
-            target,
+        baseline = run_aci_pipeline(
+            target_ffn,
+            reference,
+            source,
+            ACIConfig(
+                beta=0.05,
+                fusion_mode="ffn",
+                anchor_tokens=16,
+                anchor_chunk_size=5,
+                ffn_sketch_dim=2,
+                ffn_candidate_k=4,
+            ),
+            compute_device="cpu",
+        )
+        alias = run_aci_pipeline(
+            target_alias,
             reference,
             source,
             ACIConfig(
@@ -550,18 +621,18 @@ class PipelineTests(unittest.TestCase):
             ),
             compute_device="cpu",
         )
-        for name, parameter in target.layers[0].self_attn.named_parameters():
-            self.assertTrue(torch.equal(attention_before[name], parameter))
-        self.assertEqual(len(result.injection_diagnostics), 6)
+        for baseline_parameter, alias_parameter in zip(
+            target_ffn.parameters(), target_alias.parameters()
+        ):
+            self.assertTrue(torch.equal(baseline_parameter, alias_parameter))
+        self.assertEqual(len(alias.injection_diagnostics), 6)
         self.assertEqual(
-            {row["injection_mode"] for row in result.injection_diagnostics},
-            {"safe_ffn"},
+            {row["injection_mode"] for row in alias.injection_diagnostics},
+            {"legacy_tensor"},
         )
-        self.assertTrue(
-            all(
-                row["joint_relative_update_norm"] <= 0.050001
-                for row in result.injection_diagnostics
-            )
+        self.assertEqual(
+            baseline.report["strategies"]["ffn"],
+            alias.report["strategies"]["ffn"],
         )
 
     def test_attention_circuit_does_not_touch_ffn(self):
@@ -606,15 +677,17 @@ class PipelineTests(unittest.TestCase):
             )
         )
 
-    def test_safe_combined_uses_both_safe_paths(self):
+    def test_safe_combined_uses_circuit_attention_and_original_ffn(self):
         torch.manual_seed(29)
         reference = _reference_model()
         target = _reference_model()
         target.load_state_dict(reference.state_dict())
+        ffn_target = copy.deepcopy(target)
+        source = _source_model()
         result = run_aci_pipeline(
             target,
             reference,
-            _source_model(),
+            source,
             ACIConfig(
                 beta=0.05,
                 fusion_mode="safe_combined",
@@ -625,11 +698,30 @@ class PipelineTests(unittest.TestCase):
             ),
             compute_device="cpu",
         )
+        run_aci_pipeline(
+            ffn_target,
+            reference,
+            source,
+            ACIConfig(
+                beta=0.05,
+                fusion_mode="ffn",
+                anchor_tokens=16,
+                anchor_chunk_size=5,
+                ffn_sketch_dim=2,
+                ffn_candidate_k=4,
+            ),
+            compute_device="cpu",
+        )
         self.assertEqual(len(result.injection_diagnostics), 14)
         self.assertEqual(
             {row["injection_mode"] for row in result.injection_diagnostics},
-            {"safe_attention_circuit", "safe_ffn"},
+            {"safe_attention_circuit", "legacy_tensor"},
         )
+        for combined_block, ffn_block in zip(target.layers, ffn_target.layers):
+            for combined_parameter, ffn_parameter in zip(
+                combined_block.mlp.parameters(), ffn_block.mlp.parameters()
+            ):
+                self.assertTrue(torch.equal(combined_parameter, ffn_parameter))
 
 
 if __name__ == "__main__":

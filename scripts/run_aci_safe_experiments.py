@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""Run the fixed nine-job ACI safe FFN/circuit-attention experiment matrix."""
+"""Run legacy FFN and circuit-attention experiments with compatible run names."""
 
 from __future__ import annotations
 
