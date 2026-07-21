@@ -1,0 +1,11 @@
+{
+  "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/Malaysian-Llama-3.2-1B-Instruct-v0.1",
+  "prediction_file": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci/malay/target/primary/MalayMMLU_result_Malaysian-Llama-3.2-1B-Instruct-v0.1_True_0shot.csv",
+  "results": {
+    "MalayMMLU": {
+      "acc,none": 0.41027547185396274,
+      "correct": 9934,
+      "total": 24213
+    }
+  }
+}

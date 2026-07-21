@@ -1,0 +1,25 @@
+[
+  {
+    "task": "thai",
+    "variant": "aci",
+    "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_beta0.1/fused_model",
+    "output": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci/thai/aci/primary",
+    "command": [
+      "/home/ziheng_zhao/miniconda3/envs/lm-eval/bin/python",
+      "-m",
+      "lm_eval",
+      "--model",
+      "hf",
+      "--model_args",
+      "pretrained=/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_beta0.1/fused_model,dtype=float,trust_remote_code=True",
+      "--tasks",
+      "xcopa_th,xquad_th,xnli_th",
+      "--device",
+      "cuda:0",
+      "--batch_size",
+      "8",
+      "--output_path",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci/thai/aci/primary"
+    ]
+  }
+]

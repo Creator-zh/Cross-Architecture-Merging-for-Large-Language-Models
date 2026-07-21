@@ -1,0 +1,11 @@
+{
+  "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_beta0.1/fused_model",
+  "prediction_file": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci/malay/aci/primary/MalayMMLU_result_fused_model_True_0shot.csv",
+  "results": {
+    "MalayMMLU": {
+      "acc,none": 0.4378639573782679,
+      "correct": 10602,
+      "total": 24213
+    }
+  }
+}
