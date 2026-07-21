@@ -74,6 +74,25 @@ python scripts/summarize_merge_results.py \
   --output-prefix aci_merge_only
 ```
 
+Attention/FFN 严格消融一次生成 8 个独立 checkpoint：
+
+```bash
+python scripts/run_aci_ablations.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci
+
+python scripts/evaluate_aci_ablations.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci \
+  --eval-root ./evaluation_results/aci_ablations \
+  --lm-eval-repo /path/to/lm-evaluation-harness \
+  --malay-repo ./evaluation/malay/MalayMMLU
+```
+
+消融只与同批次 target 比较；Thai 使用 XQuAD F1，Medical 同时报告 macro 和按题数加权的 micro。`attention` 模式完全不计算或修改 FFN，`ffn` 模式完全不计算或修改 Attention。
+
 主验收标准是 Medical、Thai、Malay 三个领域宏平均分别超过原目标模型；不把三个领域合并成一个总平均。仓库当前尚未包含 ACI 的服务器评测结果，因此不预先声称提升。
 
 ## 可选 SFT
@@ -103,7 +122,9 @@ core/aci/
 scripts/
 ├── run_aci_merge.py       # 单任务合并
 ├── run_aci_tasks.py       # 双 GPU 三任务调度
+├── run_aci_ablations.py   # 固定 8-run Attention/FFN 消融
 ├── evaluate_aci_tasks.py  # merge-only 统一评测
+├── evaluate_aci_ablations.py # 消融评测与 target 对比汇总
 ├── run_aci_sft_tasks.py   # 可选 SFT 对比
 └── summarize_merge_results.py
 ```

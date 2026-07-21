@@ -124,6 +124,14 @@ def _model_for_variant(
     if variant == "aci":
         beta = betas.get(task, preset.beta)
         return (args.results_root / aci_run_name(task, beta) / "fused_model").resolve()
+    if variant in ("aci_attention", "aci_ffn"):
+        beta = betas.get(task, preset.beta)
+        fusion_mode = variant.removeprefix("aci_")
+        return (
+            args.results_root
+            / aci_run_name(task, beta, fusion_mode)
+            / "fused_model"
+        ).resolve()
     if variant == "aci_sft":
         beta = betas.get(task, preset.beta)
         return (

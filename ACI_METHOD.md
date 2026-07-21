@@ -1,224 +1,804 @@
-# Anchor–Compress–Inject：无数据异构模型合并
+# ACI：完整的无数据异构模型融合思路
 
-## 1. 目标与边界
+> Anchor–Compress–Inject（ACI，锚定—压缩—注入）
+>
+> 本文中的行间公式统一使用标准 Markdown/LaTeX 数学块 `$$...$$`，可在支持数学公式的 Markdown 渲染器中正常显示。
 
-给定三个 checkpoint：
+## 1. 研究目标
 
-- 领域目标模型 \(W_T\)：Llama-3.2 1B 的 Medical、Thai 或 Malay 版本；
-- 同架构通用参考模型 \(W_0\)：对应的通用 Llama-3.2 1B；
-- 异构能力源模型 \(W_S\)：Llama-3.1 8B Instruct。
+给定三个模型：
 
-ACI 将 8B 源模型压缩到 1B 参数形状，再把通用能力增量注入领域目标。输出仍是原 1B 架构，且只改动 Q/K/V/O/Gate/Up/Down。embedding、LM head、norm、bias 和 tokenizer 全部保持目标模型原值。
+- 领域目标模型 $M_T$：已经具备 Medical、Thai 或 Malay 子领域能力的 Llama-3.2 1B 模型；
+- 同架构参考模型 $M_0$：与目标模型架构完全相同的通用 Llama-3.2 1B 模型；
+- 异构源模型 $M_S$：能力更强但更宽、更深的 Llama-3.1 8B Instruct 模型。
 
-ACI 的合并阶段：
+目标是在不改变目标模型架构的前提下，把 8B 源模型中的通用能力迁移到 1B 领域模型，同时尽量完整保留目标模型已有的领域能力。输出模型仍然是可直接加载的 Llama-3.2 1B checkpoint。
 
-- 不加载数据集；
-- 不加载 tokenizer；
-- 不构造 token ID 或合成文本；
-- 不调用任一模型的 `forward`；
-- 只读取模型权重与结构配置；
-- 一次计算直接输出合并模型，不训练。
+ACI 的融合过程满足以下限制：
 
-当前实现有意限定于仓库的 Llama-3.x 1B←8B 实验。它要求源与参考具有相同的 query-head 数和 KV-head 数，源 head dimension 是参考的整数倍。
+- 不使用训练集、验证集或校准数据；
+- 不加载 tokenizer，不构造 token ID，也不生成合成文本；
+- 不执行模型 `forward`；
+- 不进行梯度更新或训练；
+- 只读取模型权重和结构配置；
+- 一次计算直接得到融合权重。
 
-## 2. 为什么替换 DF-OT-Procrustes
+融合仅修改每个 Transformer block 中的七个线性矩阵：
 
-旧 DFOP 的已有诊断显示：
+$$
+\mathcal{M}
+=
+\{Q,K,V,O,\mathrm{Gate},\mathrm{Up},\mathrm{Down}\}.
+$$
 
-1. 行 softmax 路由大量集中到源模型第 0、30、31 层；
-2. 已保存层对的 OT-Procrustes 解全部未达到收敛判据；
-3. 跨宽度核心的缩放系数几乎全部触及上限；
-4. Q/K/V/O 被当作普通矩阵独立映射，未保持 attention head、GQA 和 RoPE 坐标结构；
-5. Gate/Up/Down 独立对齐，不能保证同一个 SwiGLU 神经元仍被共同处理；
-6. 直接修改目标 top-rank 子空间，没有显式保护目标的领域微调增量。
+目标模型的 embedding、LM head、normalization、bias、tokenizer 和网络结构全部保持不变。
 
-这些问题不是继续增加 OT 求解器、路由分组或超参数就能简洁解决的，因此当前主线完全移除 OT、Sinkhorn、逐层路由和谱核心融合。
+## 2. 三模型分工
 
-## 3. 主方法
+三个模型并不是简单做参数平均，而是分别承担不同角色：
 
-ACI 只有三个概念步骤：Anchor、Compress、Inject。
+| 模型 | 作用 |
+|---|---|
+| 领域目标模型 $M_T$ | 提供最终架构以及需要保护的领域能力 |
+| 同架构参考模型 $M_0$ | 定义目标参数空间，并分离目标模型的领域任务向量 |
+| 异构源模型 $M_S$ | 提供希望注入的较强通用能力 |
 
-### 3.1 Anchor：共享词表锚定残差空间
+记三者对应的权重为 $W_T$、$W_0$ 和 $W_S$。同架构参考模型使目标模型的领域任务向量可以明确写成：
 
-记源模型和参考模型的 embedding 权重为
+$$
+\Delta_{\mathrm{domain}}
+=
+W_T-W_0.
+$$
 
-\[
-E_S\in\mathbb R^{V\times d_S},\qquad
-E_0\in\mathbb R^{V\times d_0},\qquad d_S>d_0.
-\]
+ACI 的核心原则是：融合后 $\Delta_{\mathrm{domain}}$ 的系数保持为 $1$，只在此基础上增加异构源模型的能力增量。
 
-从共享词表行中确定性地等距选取固定数量的锚点。每行做 L2 归一化，并在可用时同样加入 LM-head 行。构造交叉协方差
+当前三个任务的模型组合为：
 
-\[
-C=\hat E_S^\top\hat E_0.
-\]
+| 任务 | 目标模型 $M_T$ | 参考模型 $M_0$ | 源模型 $M_S$ |
+|---|---|---|---|
+| Medical | `PathFinderKR/Llama-3-1B-Medical-Instruct` | `unsloth/Llama-3.2-1B` | `unsloth/Llama-3.1-8B-Instruct` |
+| Thai | `typhoon-ai/llama3.2-typhoon2-1b-instruct` | `unsloth/Llama-3.2-1B-Instruct` | `unsloth/Llama-3.1-8B-Instruct` |
+| Malay | `mesolitica/Malaysian-Llama-3.2-1B-Instruct` | `unsloth/Llama-3.2-1B-Instruct` | `unsloth/Llama-3.1-8B-Instruct` |
 
-若
+Medical 使用 base 参考模型；Thai 和 Malay 使用 instruct 参考模型。这样可以尽量让 $W_T-W_0$ 表示领域或语言适配，而不是把通用指令微调差异错误地当作领域差异。
 
-\[
-C=U\Sigma V^\top,
-\]
+## 3. 为什么不能直接平均
 
-则全局残差映射为
+异构模型不能直接执行如下线性平均：
 
-\[
-P=UV^\top\in\mathbb R^{d_S\times d_0},
-\qquad P^\top P=I.
-\]
+$$
+W_{\mathrm{out}}
+=
+(1-\beta)W_T+\beta W_S,
+$$
 
-同一个 \(P\) 用于所有层和所有模块。Transformer 的 residual stream 跨 block 共享坐标，因此不再为七种矩阵分别猜测互不一致的神经元坐标。
+因为 8B 与 1B 模型在以下方面不一致：
 
-### 3.2 Compress：按模型结构压缩 8B
+- residual hidden size 不同；
+- Transformer 层数不同；
+- attention head dimension 不同；
+- FFN 中间维度不同；
+- 神经元、attention head 和层编号不存在天然的一一对应关系。
 
-#### 深度
+即使先把两个张量裁剪到相同形状，直接平均仍然会破坏以下结构：
 
-把全部源层按相对深度划分为连续、有序且互不重叠的组。当前 32→16 层时：
+- Q/K 的 RoPE 频率对应关系；
+- GQA 中 query head 与 KV head 的从属关系；
+- Q 与 O 的成对关系；
+- K 与 V 的成对关系；
+- SwiGLU 中 Gate 行、Up 行与 Down 列所表示的同一个 FFN 神经元。
 
-\[
-\mathcal G_\ell=\{2\ell,2\ell+1\}.
-\]
+因此，异构融合必须先建立共享 residual 坐标，再按 Transformer 的结构压缩源模型，最后才进行能力增量注入。
 
-每个源层只使用一次，不再从全深度范围自由选择边界层。组内先分别压缩到参考坐标，再求均值。
+## 4. 符号与矩阵形状
 
-#### Attention
+记目标/参考模型的 residual hidden size 为 $d_0$，源模型的 hidden size 为 $d_S$，且 $d_S>d_0$。记 query head 数为 $h_Q$，KV head 数为 $h_{KV}$，head dimension 分别为 $a_0$ 和 $a_S$。FFN 中间维度分别为 $m_0$ 和 $m_S$。
 
-Llama-3.1 8B 与 Llama-3.2 1B 都有 32 个 query heads 和 8 个 KV heads，但 head dimension 分别为 128 和 64。
+Hugging Face Llama 线性层的权重形状如下：
 
-ACI 在每个 head 内选择具有相同 RoPE 基频的坐标。128→64 时选择：
+| 模块 | 源模型形状 | 目标/参考模型形状 |
+|---|---:|---:|
+| $W_Q$ | $(h_Qa_S)\times d_S$ | $(h_Qa_0)\times d_0$ |
+| $W_K,W_V$ | $(h_{KV}a_S)\times d_S$ | $(h_{KV}a_0)\times d_0$ |
+| $W_O$ | $d_S\times(h_Qa_S)$ | $d_0\times(h_Qa_0)$ |
+| $W_{\mathrm{gate}},W_{\mathrm{up}}$ | $m_S\times d_S$ | $m_0\times d_0$ |
+| $W_{\mathrm{down}}$ | $d_S\times m_S$ | $d_0\times m_0$ |
+
+当前实验对应：
+
+$$
+L_S=32,\qquad L_0=16,
+$$
+
+$$
+d_S=4096,\qquad d_0=2048,
+$$
+
+$$
+h_Q=32,\qquad h_{KV}=8,
+$$
+
+$$
+a_S=128,\qquad a_0=64,
+$$
+
+$$
+m_S=14336,\qquad m_0=8192.
+$$
+
+## 5. 方法总览
+
+ACI 包含三个连续步骤：
+
+1. **Anchor**：利用共享词表中的 embedding/LM-head 权重，求一个全局 residual 映射 $P$；
+2. **Compress**：用 $P$、深度分组、attention 结构匹配和 FFN 神经元匹配，把 8B 权重压缩成 1B 形状；
+3. **Inject**：把“压缩源模型相对于通用 1B 参考模型的增量”注入领域目标模型。
+
+概念上的主公式是：
+
+$$
+W_{\mathrm{out}}
+=
+W_T
++
+\beta
+\left(
+\mathcal{C}(W_S)-W_0
+\right),
+$$
+
+其中 $\mathcal{C}$ 是结构保持的异构压缩算子，$\beta$ 是唯一直接控制融合效果的超参数。
+
+代码还会对上式的更新量施加一个由权重范数自动计算的安全系数。第 9 节给出与实际实现完全一致的最终公式。
+
+## 6. Anchor：建立全局 residual 坐标映射
+
+### 6.1 共享词表锚点
+
+记源模型和参考模型的输入 embedding 为：
+
+$$
+E_S\in\mathbb{R}^{V\times d_S},
+\qquad
+E_0\in\mathbb{R}^{V\times d_0}.
+$$
+
+从二者共享的词表行中，确定性地等距选取 $n$ 个锚点。第 $r$ 个锚点的索引为：
+
+$$
+i_r
+=
+\left\lfloor
+\frac{(2r+1)V}{2n}
+\right\rfloor,
+\qquad
+r=0,1,\ldots,n-1.
+$$
+
+这一步只按词表行号读取权重，不需要知道 token 对应的文本，也不需要 tokenizer。
+
+将选中的每个 embedding 行做 L2 归一化，得到 $\widehat E_S$ 和 $\widehat E_0$。如果两个模型都存在 LM head，则同样处理 LM-head 权重，并把输入与输出两部分交叉协方差取平均。
+
+仅使用输入 embedding 时，交叉协方差为：
+
+$$
+C
+=
+\frac{1}{n}
+\widehat E_S^{\mathsf T}
+\widehat E_0
+\in
+\mathbb{R}^{d_S\times d_0}.
+$$
+
+### 6.2 矩形正交 Procrustes
+
+ACI 求解如下矩形正交对齐问题：
+
+$$
+P^{\star}
+=
+\underset{P^{\mathsf T}P=I_{d_0}}{\arg\min}
+\left\|
+\widehat E_SP-\widehat E_0
+\right\|_F^2.
+$$
+
+对交叉协方差做薄 SVD：
+
+$$
+C
+=
+U\Sigma V^{\mathsf T}.
+$$
+
+则闭式解为：
+
+$$
+P
+=
+UV^{\mathsf T}
+\in
+\mathbb{R}^{d_S\times d_0},
+$$
+
+并满足：
+
+$$
+P^{\mathsf T}P
+=
+I_{d_0}.
+$$
+
+同一个 $P$ 用于所有层以及 Q/K/V/O/Gate/Up/Down 七类矩阵。这样可以避免不同模块各自学习一套互相矛盾的 residual 坐标。
+
+SVD 同时给出参考侧的右奇异向量。取前 $k$ 个方向组成：
+
+$$
+R
+\in
+\mathbb{R}^{d_0\times k}.
+$$
+
+$R$ 只用于后续 attention/FFN 匹配签名的低维计算，不改变最终模型维度。
+
+## 7. Compress：结构保持的异构压缩
+
+### 7.1 深度压缩
+
+设源模型有 $L_S$ 层，目标模型有 $L_0$ 层。目标第 $\ell$ 层对应的源层集合定义为：
+
+$$
+\mathcal{G}_{\ell}
+=
+\left\{
+\left\lfloor\frac{\ell L_S}{L_0}\right\rfloor,
+\ldots,
+\left\lfloor\frac{(\ell+1)L_S}{L_0}\right\rfloor-1
+\right\}.
+$$
+
+在当前 $32\rightarrow16$ 的设置下：
+
+$$
+\mathcal{G}_{\ell}
+=
+\{2\ell,2\ell+1\}.
+$$
+
+这些组连续、单调、互不重叠，并且完整覆盖源模型的 32 层。每个源层只使用一次，避免自由路由集中到少数边界层。
+
+设第 $s$ 个源层中模块 $m$ 的结构压缩结果为 $\widetilde W_{S,s}^{(m)}$，则目标第 $\ell$ 层接收的源权重为：
+
+$$
+\overline W_{S,\ell}^{(m)}
+=
+\frac{1}{|\mathcal{G}_{\ell}|}
+\sum_{s\in\mathcal{G}_{\ell}}
+\widetilde W_{S,s}^{(m)}.
+$$
+
+### 7.2 Attention 的 RoPE 坐标压缩
+
+当前源模型和目标模型的 query-head 数与 KV-head 数相同，但源 head dimension 是目标的两倍。ACI 只选择具有对应 RoPE 基频的源坐标。
+
+对 $128\rightarrow64$，每个 head 选择：
 
 ```text
-[0, 2, ..., 62, 64, 66, ..., 126]
+[0, 2, 4, ..., 62, 64, 66, 68, ..., 126]
 ```
 
-频率压缩后，ACI 以 Q/K/V/O 的联合权重签名对 8 个 GQA 组做一一匹配，再在每组内对 4 个 query heads 做一一匹配。Q/K/V/O 共用这套置换，既消除 head 编号的任意性，又不拆散 GQA 依赖。记包含频率选择与联合置换的算子为 \(H_Q,H_{KV}\)，则：
+记单个 head 的频率选择矩阵为：
 
-\[
-\widetilde W_Q=H_QW_Q^SP,
-\]
+$$
+D
+\in
+\{0,1\}^{a_0\times a_S}.
+$$
 
-\[
-\widetilde W_K=H_{KV}W_K^SP,
-\qquad
-\widetilde W_V=H_{KV}W_V^SP,
-\]
+选择矩阵满足每行恰有一个 $1$，表示从源 head 中抽取一个对应频率坐标。
 
-\[
-\widetilde W_O=P^\top W_O^SH_Q^\top.
-\]
+### 7.3 GQA 与 query head 联合匹配
 
-Q/K 共享同一套 RoPE 频率选择；Q/O 共享 query-head 置换；K/V 共享 KV-group 置换。
+head 编号本身没有语义保证，因此不能假设源模型第 $g$ 个 GQA 组就对应参考模型第 $g$ 个组。ACI 先把源权重压缩到参考 residual 空间，再使用 Q/K/V/O 的联合低维签名进行一一匹配。
 
-#### FFN
+对每个 GQA 组构造联合签名 $z_g$，并求解：
 
-SwiGLU 的第 \(j\) 个中间神经元由以下三部分共同定义：
+$$
+\pi_{G}^{\star}
+=
+\underset{\pi_G\in\mathfrak{S}_{h_{KV}}}{\arg\max}
+\sum_{g=1}^{h_{KV}}
+\operatorname{cos}
+\left(
+z_{0,g},
+z_{S,\pi_G(g)}
+\right).
+$$
 
-- Gate 的第 \(j\) 行；
-- Up 的第 \(j\) 行；
-- Down 的第 \(j\) 列。
+其中 $\mathfrak{S}_{h_{KV}}$ 表示所有 KV-group 双射。代码使用精确最大分配求解八个 GQA 组的匹配。
 
-ACI 绝不拆开这三部分。利用 Anchor SVD 得到的参考侧低维基 \(R\)，构造联合签名：
+在每个已匹配的 GQA 组内部，再根据 Q 与 O 的联合签名，对该组中的 query heads 求双射：
 
-\[
-z_j=
-\operatorname{norm}\left[
-\operatorname{norm}(g_jR),
-\operatorname{norm}(u_jR),
-\operatorname{norm}(d_j^\top R)
+$$
+\pi_{Q\mid g}^{\star}
+=
+\underset{\pi\in\mathfrak{S}_{h_Q/h_{KV}}}{\arg\max}
+\sum_q
+\operatorname{cos}
+\left(
+z_{0,g,q},
+z_{S,\pi_G(g),\pi(q)}
+\right).
+$$
+
+由频率选择和匹配置换组成两个整体算子：
+
+$$
+H_Q
+\in
+\{0,1\}^{(h_Qa_0)\times(h_Qa_S)},
+$$
+
+$$
+H_{KV}
+\in
+\{0,1\}^{(h_{KV}a_0)\times(h_{KV}a_S)}.
+$$
+
+最终 attention 压缩公式为：
+
+$$
+\widetilde W_Q
+=
+H_QW_Q^SP,
+$$
+
+$$
+\widetilde W_K
+=
+H_{KV}W_K^SP,
+$$
+
+$$
+\widetilde W_V
+=
+H_{KV}W_V^SP,
+$$
+
+$$
+\widetilde W_O
+=
+P^{\mathsf T}W_O^SH_Q^{\mathsf T}.
+$$
+
+这套共享结构保证：
+
+- Q 与 K 使用相同的 RoPE 频率压缩规则；
+- K 与 V 使用相同的 KV-group 置换；
+- Q 与 O 使用相同的 query-head 置换；
+- 每个 query head 仍然属于正确的 GQA 组。
+
+### 7.4 FFN 的 SwiGLU 神经元闭包
+
+SwiGLU 中第 $j$ 个 FFN 神经元由三部分共同定义：
+
+- $W_{\mathrm{gate}}$ 的第 $j$ 行；
+- $W_{\mathrm{up}}$ 的第 $j$ 行；
+- $W_{\mathrm{down}}$ 的第 $j$ 列。
+
+这三部分必须一起选择，不能独立排序或独立匹配。
+
+对参考模型第 $j$ 个 FFN 神经元，定义联合签名：
+
+$$
+z_{0,j}
+=
+\operatorname{norm}
+\left[
+\operatorname{norm}(g_{0,j}R),
+\operatorname{norm}(u_{0,j}R),
+\operatorname{norm}(d_{0,j}^{\mathsf T}R)
 \right].
-\]
+$$
 
-源侧先通过 \(P\) 投到参考 residual space，再计算同样签名。对参考 FFN 神经元与更宽的源 FFN 神经元做确定性、无重复的余弦贪心匹配，得到选择矩阵 \(S\)。随后：
+其中 $g_{0,j}$ 和 $u_{0,j}$ 分别是 Gate/Up 的第 $j$ 行，$d_{0,j}$ 是 Down 的第 $j$ 列。
 
-\[
-\widetilde W_{gate}=SW_{gate}^SP,
-\]
+源模型先通过 $P$ 映射到参考 residual 空间，其签名为：
 
-\[
-\widetilde W_{up}=SW_{up}^SP,
-\]
-
-\[
-\widetilde W_{down}=P^\top W_{down}^SS^\top.
-\]
-
-同一个 \(S\) 同时作用于 Gate/Up/Down，保持 SwiGLU 神经元闭包。
-
-### 3.3 Inject：保护领域任务向量
-
-压缩会确定性地损失部分范数。对每层每模块，只做一次透明的 Frobenius 范数校准：
-
-\[
-\mathcal C(W_S)
+$$
+z_{S,i}
 =
-\frac{\lVert W_0\rVert_F}
-{\lVert\widetilde W_S\rVert_F+\epsilon}
-\widetilde W_S.
-\]
+\operatorname{norm}
+\left[
+\operatorname{norm}(g_{S,i}PR),
+\operatorname{norm}(u_{S,i}PR),
+\operatorname{norm}(d_{S,i}^{\mathsf T}PR)
+\right].
+$$
 
-最终合并公式为：
+实现使用确定性的唯一贪心匹配：每个目标 FFN 神经元选择一个余弦相似度高的源神经元，同时禁止两个目标神经元重复使用同一个源神经元。候选冲突无法在候选集合中解决时，再从所有未使用源神经元中做确定性回退选择。
 
-\[
-\boxed{
-W_{out}
+记最终选择矩阵为：
+
+$$
+S
+\in
+\{0,1\}^{m_0\times m_S},
+$$
+
+其中每一行恰有一个 $1$，每一列至多一个 $1$。FFN 压缩为：
+
+$$
+\widetilde W_{\mathrm{gate}}
 =
-W_T+\beta\bigl(\mathcal C(W_S)-W_0\bigr)
+SW_{\mathrm{gate}}^SP,
+$$
+
+$$
+\widetilde W_{\mathrm{up}}
+=
+SW_{\mathrm{up}}^SP,
+$$
+
+$$
+\widetilde W_{\mathrm{down}}
+=
+P^{\mathsf T}W_{\mathrm{down}}^SS^{\mathsf T}.
+$$
+
+同一个 $S$ 同时用于 Gate、Up 和 Down，从而保持完整的 SwiGLU 神经元结构。
+
+## 8. 压缩后的范数校准
+
+宽度选择和深度平均会确定性地改变权重能量。为避免源增量仅仅由尺寸压缩造成的范数变化主导，ACI 对每个目标层、每个模块分别进行一次 Frobenius 范数校准。
+
+对目标第 $\ell$ 层的模块 $m$，定义：
+
+$$
+\alpha_{\ell}^{(m)}
+=
+\frac{
+\left\|W_{0,\ell}^{(m)}\right\|_F
+}{
+\max\left(
+\left\|\overline W_{S,\ell}^{(m)}\right\|_F,
+\varepsilon
+\right)
+}.
+$$
+
+校准后的压缩源权重为：
+
+$$
+\mathcal{C}_{\ell}^{(m)}(W_S)
+=
+\alpha_{\ell}^{(m)}
+\overline W_{S,\ell}^{(m)}.
+$$
+
+这里不匹配逐行范数，也不引入可学习缩放；只做每个张量一次可解释的整体能量校准。
+
+## 9. Inject：保护领域任务向量并限制更新
+
+### 9.1 能力增量
+
+压缩源模型相对通用参考模型的能力增量定义为：
+
+$$
+\Delta_{S,\ell}^{(m)}
+=
+\mathcal{C}_{\ell}^{(m)}(W_S)
+-
+W_{0,\ell}^{(m)}.
+$$
+
+未经保护的原始更新为：
+
+$$
+U_{\ell}^{(m)}
+=
+\beta
+\Delta_{S,\ell}^{(m)}.
+$$
+
+### 9.2 自动安全系数
+
+为防止单个张量出现异常大更新，代码根据权重范数自动计算安全系数：
+
+$$
+\tau_{\ell}^{(m)}
+=
+\min
+\left(
+1,
+\frac{
+\beta
+\left\|W_{T,\ell}^{(m)}\right\|_F
+}{
+\max\left(
+\left\|U_{\ell}^{(m)}\right\|_F,
+\varepsilon
+\right)
 }
-\]
+\right).
+$$
 
-令领域任务向量为
+当 $\beta=0$ 或原始更新为零时，定义 $\tau=1$。
 
-\[
-\Delta_{domain}=W_T-W_0,
-\]
+与代码完全一致的最终融合公式是：
 
-则
-
-\[
-W_{out}
+$$
+\boxed{
+W_{\mathrm{out},\ell}^{(m)}
 =
-W_0+\Delta_{domain}
-+\beta\bigl(\mathcal C(W_S)-W_0\bigr).
-\]
+W_{T,\ell}^{(m)}
++
+\tau_{\ell}^{(m)}\beta
+\left(
+\mathcal{C}_{\ell}^{(m)}(W_S)
+-
+W_{0,\ell}^{(m)}
+\right)
+}
+$$
 
-因此 \(\Delta_{domain}\) 的系数严格保持为 1，而不是被 \((1-\beta)\) 缩小。为避免单个张量异常，最终更新满足固定保护条件：
+因此每个张量都满足：
 
-\[
-\frac{\lVert W_{out}-W_T\rVert_F}
-{\lVert W_T\rVert_F}
-\le \beta.
-\]
+$$
+\frac{
+\left\|
+W_{\mathrm{out},\ell}^{(m)}
+-
+W_{T,\ell}^{(m)}
+\right\|_F
+}{
+\max\left(
+\left\|W_{T,\ell}^{(m)}\right\|_F,
+\varepsilon
+\right)
+}
+\leq
+\beta.
+$$
 
-这里没有第二个 trust-ratio 超参数；\(\beta\) 同时表示注入强度和最大相对更新。
+$\tau$ 不是需要调节的第二个超参数，而是由当前张量自动计算的保护系数。实际有效注入强度为：
 
-## 4. 唯一效果超参数
+$$
+\lambda_{\ell}^{(m)}
+=
+\tau_{\ell}^{(m)}\beta,
+\qquad
+0\leq\lambda_{\ell}^{(m)}\leq\beta.
+$$
 
-主方法只有 \(\beta\)。当前预注册值沿用原 T&M 在三个任务上的 merge-only 强度，而不是根据 ACI 测试结果倒推：
+### 9.3 为什么领域能力不会被线性稀释
 
-| Task | β |
+把目标权重写成：
+
+$$
+W_T
+=
+W_0+\Delta_{\mathrm{domain}}.
+$$
+
+代入最终公式可得：
+
+$$
+W_{\mathrm{out}}
+=
+W_0
++
+\Delta_{\mathrm{domain}}
++
+\lambda
+\left(
+\mathcal{C}(W_S)-W_0
+\right).
+$$
+
+可以看到，领域任务向量 $\Delta_{\mathrm{domain}}$ 的系数严格为 $1$。这与普通线性插值不同：普通插值会把目标模型整体乘以 $1-\beta$，从而直接缩小领域任务向量。
+
+需要注意：系数保持为 $1$ 只表示“不在线性公式中主动削弱领域增量”，并不构成对所有评测任务必然提升的数学保证。新增源增量仍可能与领域能力发生干扰，最终效果必须通过服务器实验验证。
+
+## 10. 完整算法
+
+输入：目标模型 $M_T$、同架构参考模型 $M_0$、异构源模型 $M_S$、融合强度 $\beta$。
+
+1. 检查 $M_T$ 与 $M_0$ 的层数、七类线性层形状和 attention 几何完全一致。
+2. 检查 $M_S$ 比 $M_0$ 更深且更宽，并满足当前 attention 收缩条件。
+3. 从共享 embedding/LM-head 行构造交叉协方差，SVD 求全局映射 $P$ 和签名基 $R$。
+4. 按相对深度把全部源层划分为连续组 $\mathcal{G}_{\ell}$。
+5. 对每个目标层 $\ell$：
+   1. 对每个 $s\in\mathcal{G}_{\ell}$，执行 RoPE 频率选择；
+   2. 联合匹配 GQA group 和组内 query head，压缩 Q/K/V/O；
+   3. 联合匹配 SwiGLU 神经元，压缩 Gate/Up/Down；
+   4. 对组内各源层的压缩结果求均值；
+   5. 对七个模块分别做 Frobenius 范数校准；
+   6. 计算源能力增量、安全系数 $\tau$ 和最终融合权重。
+6. 保持目标模型的其余参数不变。
+7. 保存 1B 融合模型、目标 tokenizer 元数据和全部诊断文件。
+
+可将整体过程概括为：
+
+$$
+M_S
+\xrightarrow[\text{无数据}]{\text{Anchor}}
+P
+\xrightarrow{\text{结构化 Compress}}
+\mathcal{C}(W_S)
+\xrightarrow[W_0]{\text{Inject into }W_T}
+W_{\mathrm{out}}.
+$$
+
+## 11. 超参数
+
+### 11.1 唯一的效果超参数
+
+唯一直接控制能力注入大小的超参数是 $\beta$：
+
+| 任务 | 当前预注册值 |
 |---|---:|
-| Medical | 0.03 |
-| Thai | 0.01 |
-| Malay | 0.10 |
+| Medical | $0.03$ |
+| Thai | $0.01$ |
+| Malay | $0.10$ |
 
-锚点数量、分块大小、FFN sketch 维度和候选数是计算参数，不改变方法定义。若进行 β 网格实验，必须完整报告网格，不能只报告测试集最优点并称为预设主结果。
+这些值沿用原 T&M merge-only 实验的任务强度，并不是根据 ACI 测试结果反向挑选的最优值，因此只能作为首轮服务器实验的预设起点。
 
-## 5. 诊断与失败条件
+### 11.2 数值与计算参数
 
-每次运行写出：
+以下参数用于控制显存、计算量或确定性近似，不应包装成额外的任务调优参数：
 
-- `run_report.json`：锚点余弦、投影正交误差、层分组和耗时；
-- `attention_matches.jsonl`：GQA 组与 query-head 的联合匹配质量和置换；
-- `ffn_matches.jsonl`：联合 FFN 匹配的均值/最小余弦及重复数；
-- `injections.jsonl`：范数校准、保护系数和实际相对更新。
+| 参数 | 默认值 | 含义 |
+|---|---:|---|
+| `anchor_tokens` | 8192 | 用于求 $P$ 的确定性共享词表行数 |
+| `anchor_chunk_size` | 1024 | 分块累计交叉协方差，控制显存 |
+| `ffn_sketch_dim` | 32 | FFN 匹配签名维度 $k$ |
+| `ffn_candidate_k` | 32 | 唯一贪心匹配的候选数 |
+| `eps` | $10^{-8}$ | 数值稳定项 |
 
-实现会直接拒绝以下情况：
+## 12. 与旧 DF-OT-Procrustes 的关键区别
 
-- 目标与参考的层数或七模块形状不一致；
+| 方面 | 旧 DFOP | ACI |
+|---|---|---|
+| 层映射 | 学习式软路由，可能塌缩到少数层 | 连续单调分组，全部源层各使用一次 |
+| 坐标对齐 | 多个局部 OT/Procrustes 问题 | 共享词表锚定的单个全局映射 $P$ |
+| Attention | 把 Q/K/V/O 当普通矩阵独立处理 | 保持 RoPE、GQA、Q/O、K/V 结构 |
+| FFN | Gate/Up/Down 可能独立对齐 | 三者共享同一神经元选择矩阵 $S$ |
+| 领域保护 | 直接改写目标子空间 | 显式保留 $W_T-W_0$ 的单位系数 |
+| 效果超参数 | 路由、OT、rank、scale、trust 等多个参数 | 仅 $\beta$ |
+| 求解稳定性 | 依赖迭代收敛 | SVD 闭式映射 + 确定性离散匹配 |
+
+ACI 仍在 Anchor 阶段使用一次闭式正交 Procrustes，但不再使用 OT、Sinkhorn、逐层软路由或谱核心融合。
+
+## 13. 诊断与正确性检查
+
+每次融合会生成以下诊断文件：
+
+- `run_report.json`：模型层数、层分组、锚点余弦、投影形状、正交误差和耗时；
+- `attention_matches.jsonl`：每个源—目标层对的 GQA/query-head 置换与匹配余弦；
+- `ffn_matches.jsonl`：FFN 匹配的平均/最小余弦和源神经元重复数；
+- `injections.jsonl`：范数校准系数、自动安全系数和实际相对更新量。
+
+结构正确性应满足：
+
+$$
+\left\|P^{\mathsf T}P-I\right\|_{\infty}
+\approx 0,
+$$
+
+$$
+\texttt{reused\_sources}=0,
+$$
+
+$$
+0
+\leq
+\texttt{relative\_update\_norm}
+\leq
+\beta.
+$$
+
+以下情况会被实现直接拒绝：
+
+- 目标模型与参考模型的层数或七类模块形状不同；
+- 目标模型与参考模型的 attention geometry 不同；
 - 源模型比参考模型更窄或更浅；
-- query-head 或 KV-head 数不同；
-- head dimension 不是可整除的收缩关系；
-- FFN 源宽度小于参考宽度。
+- 源/参考 query-head 数或 KV-head 数不同；
+- source head dimension 不能被 target head dimension 整除；
+- 源 FFN 宽度小于目标 FFN 宽度。
 
-## 6. 实验声明
+## 14. 实验设计与验收标准
 
-仓库现有 `evaluation_results/dfop_*` 和 `transport_results/dfop/` 是旧方法的历史产物，不是 ACI 结果。ACI 尚需在服务器生成 checkpoint 并按 Medical、Thai、Malay 三个宏平均分别与原目标模型比较；在结果产生前，文档不声称已经提升。
+### 14.1 必须比较的模型
+
+每个领域至少评测：
+
+1. 原领域目标模型 `target`；
+2. 同架构通用参考模型 `reference`；
+3. 8B 异构源模型 `source`；
+4. 无数据融合模型 `aci`。
+
+可选的 `aci_sft` 只作为独立对比，不属于无数据 ACI 主方法。
+
+### 14.2 主验收标准
+
+对领域 $D$ 的 $N_D$ 个任务，宏平均为：
+
+$$
+\operatorname{MacroAvg}(D,M)
+=
+\frac{1}{N_D}
+\sum_{i=1}^{N_D}
+\operatorname{Score}(D_i,M).
+$$
+
+主验收条件是三个领域分别满足：
+
+$$
+\operatorname{MacroAvg}(D,M_{\mathrm{ACI}})
+>
+\operatorname{MacroAvg}(D,M_T),
+$$
+
+其中：
+
+$$
+D\in\{\mathrm{Medical},\mathrm{Thai},\mathrm{Malay}\}.
+$$
+
+不把三个领域继续合成为一个总平均，以免一个领域的大幅提升掩盖另一个领域的退化。
+
+理想结果是每个子任务都超过原目标模型；现实的最低标准是每个领域自身的宏平均超过目标模型。
+
+### 14.3 合法选择 $\beta$
+
+如需搜索每个领域独立的 $\beta$，应预先声明完整网格，例如：
+
+$$
+\beta
+\in
+\{0.005,0.01,0.02,0.03,0.05,0.10\}.
+$$
+
+选择规则必须基于独立验证集或开发集。若任务没有可用验证集，应完整报告整个网格，并保留预注册默认值作为主结果；不能只保留测试集最高分再声称它是预设结果。
+
+## 15. 方法假设与局限
+
+ACI 的能力提升建立在以下假设上：
+
+1. 共享词表的 embedding/LM-head 行可以为 8B 与 1B residual space 提供稳定锚点；
+2. 较强 8B 模型相对通用 1B 参考模型的差异包含可迁移的通用能力；
+3. RoPE/GQA/SwiGLU 结构保持能减少异构压缩引入的功能破坏；
+4. 小幅、受限的源增量可以在不明显覆盖领域任务向量的情况下改善能力。
+
+当前局限包括：
+
+- 静态权重对齐无法完全消除神经网络内部的置换与缩放等价性；
+- 单个全局线性映射 $P$ 未必能描述所有层的非线性表征差异；
+- FFN 使用确定性贪心匹配而非全局最优的大规模双射；
+- 当前实现只面向本仓库的 Llama-3.x 1B←8B 几何关系；
+- 理论上的领域向量保护不能保证评测分数必然提升；
+- 当前仓库尚无 ACI 服务器评测结果，因此不能提前宣称已经超过目标模型。
+
+## 16. 一句话总结
+
+ACI 先用共享词表权重建立唯一的 8B→1B residual 映射，再按深度、RoPE、GQA 和 SwiGLU 结构压缩 8B，最后把压缩源模型相对于通用 1B 参考模型的受限增量加到领域 1B 模型上：
+
+$$
+\boxed{
+W_{\mathrm{out}}
+=
+W_T
++
+\lambda
+\left(
+\mathcal{C}(W_S)-W_0
+\right),
+\qquad
+0\leq\lambda\leq\beta
+}
+$$
+
+其核心不是把三个模型直接平均，而是“先解决异构坐标与结构对应，再只注入源模型相对于通用参考模型的能力增量”。

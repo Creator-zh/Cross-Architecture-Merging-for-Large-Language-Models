@@ -6,7 +6,9 @@ from typing import Optional, Sequence
 import torch.nn as nn
 
 
-MODULE_TYPES = ("q", "k", "v", "o", "gate", "up", "down")
+ATTENTION_MODULE_TYPES = ("q", "k", "v", "o")
+FFN_MODULE_TYPES = ("gate", "up", "down")
+MODULE_TYPES = ATTENTION_MODULE_TYPES + FFN_MODULE_TYPES
 
 
 @dataclass(frozen=True)

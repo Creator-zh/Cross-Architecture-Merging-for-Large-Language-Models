@@ -15,6 +15,8 @@ from .ffn import contract_ffn
 from .injection import inject_protected_delta
 from .io import write_json, write_jsonl
 from .registry import (
+    ATTENTION_MODULE_TYPES,
+    FFN_MODULE_TYPES,
     MODULE_TYPES,
     collect_blocks,
     input_embedding,
@@ -104,6 +106,13 @@ def run_aci_pipeline(
 
     config = config or ACIConfig()
     config.validate()
+    active_modules = (
+        MODULE_TYPES
+        if config.fusion_mode == "full"
+        else ATTENTION_MODULE_TYPES
+        if config.fusion_mode == "attention"
+        else FFN_MODULE_TYPES
+    )
     device = resolve_compute_device(compute_device)
     started = time.perf_counter()
 
@@ -154,53 +163,58 @@ def run_aci_pipeline(
                 device=device,
                 dtype=torch.float32,
             )
-            for module in MODULE_TYPES
+            for module in active_modules
         }
         source_weight = 1.0 / len(source_indices)
         for source_index in source_indices:
             source_block = source_blocks[source_index]
-            attention, attention_match = contract_attention(
-                source_block,
-                reference_block,
-                anchor.source_to_reference,
-                anchor.reference_sketch_basis,
-                source_geometry,
-                reference_geometry,
-            )
-            ffn, match = contract_ffn(
-                source_block,
-                reference_block,
-                anchor.source_to_reference,
-                anchor.reference_sketch_basis,
-                config,
-            )
-            for module, value in {**attention, **ffn}.items():
-                compressed[module].add_(value, alpha=source_weight)
-            attention_diagnostics.append(
-                {
-                    "target_layer": target_index,
-                    "source_layer": source_index,
-                    "mean_group_cosine": attention_match.mean_group_cosine,
-                    "minimum_group_cosine": attention_match.minimum_group_cosine,
-                    "mean_query_cosine": attention_match.mean_query_cosine,
-                    "minimum_query_cosine": attention_match.minimum_query_cosine,
-                    "group_assignment": attention_match.group_assignment,
-                    "query_assignment": attention_match.query_assignment,
-                }
-            )
-            ffn_diagnostics.append(
-                {
-                    "target_layer": target_index,
-                    "source_layer": source_index,
-                    "mean_match_cosine": match.mean_cosine,
-                    "minimum_match_cosine": match.minimum_cosine,
-                    "reused_sources": match.reused_sources,
-                }
-            )
-            del attention, attention_match, ffn, match
+            if config.uses_attention:
+                attention, attention_match = contract_attention(
+                    source_block,
+                    reference_block,
+                    anchor.source_to_reference,
+                    anchor.reference_sketch_basis,
+                    source_geometry,
+                    reference_geometry,
+                )
+                for module, value in attention.items():
+                    compressed[module].add_(value, alpha=source_weight)
+                attention_diagnostics.append(
+                    {
+                        "target_layer": target_index,
+                        "source_layer": source_index,
+                        "mean_group_cosine": attention_match.mean_group_cosine,
+                        "minimum_group_cosine": attention_match.minimum_group_cosine,
+                        "mean_query_cosine": attention_match.mean_query_cosine,
+                        "minimum_query_cosine": attention_match.minimum_query_cosine,
+                        "group_assignment": attention_match.group_assignment,
+                        "query_assignment": attention_match.query_assignment,
+                    }
+                )
+                del attention, attention_match
+            if config.uses_ffn:
+                ffn, match = contract_ffn(
+                    source_block,
+                    reference_block,
+                    anchor.source_to_reference,
+                    anchor.reference_sketch_basis,
+                    config,
+                )
+                for module, value in ffn.items():
+                    compressed[module].add_(value, alpha=source_weight)
+                ffn_diagnostics.append(
+                    {
+                        "target_layer": target_index,
+                        "source_layer": source_index,
+                        "mean_match_cosine": match.mean_cosine,
+                        "minimum_match_cosine": match.minimum_cosine,
+                        "reused_sources": match.reused_sources,
+                    }
+                )
+                del ffn, match
             _empty_cache(device)
 
-        for module in MODULE_TYPES:
+        for module in active_modules:
             target_linear = target_block.as_dict()[module]
             reference_linear = reference_block.as_dict()[module]
             injection = inject_protected_delta(
@@ -235,7 +249,8 @@ def run_aci_pipeline(
     report = {
         "method": "anchor_compress_inject",
         "beta": config.beta,
-        "modules": list(MODULE_TYPES),
+        "fusion_mode": config.fusion_mode,
+        "modules": list(active_modules),
         "target_layers": len(target_blocks),
         "source_layers": len(source_blocks),
         "layer_groups": groups,

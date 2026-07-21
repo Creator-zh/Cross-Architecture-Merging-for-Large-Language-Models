@@ -91,7 +91,69 @@ python scripts/summarize_merge_results.py \
 
 验收标准是 Medical、Thai、Malay 各自的宏平均分别超过目标模型，不把三个领域再合成一个总平均。
 
-## 4. 可选 SFT 对比
+## 4. Attention/FFN 严格消融
+
+以下入口固定运行已预注册的 8 个 checkpoint：Medical 两个、Thai 四个、Malay 两个。最多同时占用两张 GPU，已有 full ACI 输出不会被覆盖。
+
+```bash
+python scripts/run_aci_ablations.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci
+```
+
+输出目录：
+
+```text
+merge_results/aci/
+├── medical_aci_attention_beta0.03/
+├── medical_aci_ffn_beta0.03/
+├── thai_aci_attention_beta0.01/
+├── thai_aci_attention_beta0.1/
+├── thai_aci_ffn_beta0.01/
+├── thai_aci_ffn_beta0.1/
+├── malay_aci_attention_beta0.1/
+└── malay_aci_ffn_beta0.1/
+```
+
+严格定义：
+
+- `attention`：只计算和更新 Q/K/V/O；Gate/Up/Down 与 target 逐位一致；
+- `ffn`：只计算和更新 Gate/Up/Down；Q/K/V/O 与 target 逐位一致；
+- 禁用模块不会执行压缩，诊断中也没有对应记录。
+
+评测 8 个消融模型，并为每个领域重新评测同批次 target：
+
+```bash
+python scripts/evaluate_aci_ablations.py \
+  --gpus 0,1 \
+  --models-root ./models \
+  --results-root ./merge_results/aci \
+  --eval-root ./evaluation_results/aci_ablations \
+  --lm-eval-repo /path/to/lm-evaluation-harness \
+  --malay-repo ./evaluation/malay/MalayMMLU
+```
+
+自动生成：
+
+```text
+evaluation_results/aci_ablations/
+├── ablation_manifest.json
+├── aci_ablation_scores.csv
+└── aci_ablation_summary.md
+```
+
+汇总只和 target 比较，不读取或比较 DFOP。Thai 宏平均使用 XQuAD F1；Medical 同时报告无权 macro 和按题数加权的 micro accuracy。若评测已经完成，只需重新汇总：
+
+```bash
+python scripts/evaluate_aci_ablations.py \
+  --eval-root ./evaluation_results/aci_ablations \
+  --summarize-only
+```
+
+单任务通用入口也支持 `--fusion-mode full|attention|ffn`；省略时仍为原来的 `full`。
+
+## 5. 可选 SFT 对比
 
 SFT 不属于无数据 ACI 主方法，只作为独立对比：
 
@@ -116,7 +178,7 @@ python scripts/evaluate_aci_tasks.py \
   --eval-root ./evaluation_results/aci_with_sft
 ```
 
-## 5. 诊断检查
+## 6. 诊断检查
 
 每个运行目录优先检查：
 

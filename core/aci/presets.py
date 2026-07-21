@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from .config import FUSION_MODES
+
 
 @dataclass(frozen=True)
 class ACITaskPreset:
@@ -19,6 +21,17 @@ class ACITaskPreset:
     sft_dataset_type: str = ""
     sft_learning_rate: float = 0.0
     sft_samples: int = 2000
+
+
+@dataclass(frozen=True)
+class ACIAblationPreset:
+    task: str
+    fusion_mode: str
+    beta: float
+
+    @property
+    def variant(self) -> str:
+        return f"aci_{self.fusion_mode}_beta{self.beta:g}"
 
 
 SHARED_SOURCE_ID = "unsloth/Llama-3.1-8B-Instruct"
@@ -91,6 +104,18 @@ TASK_PRESETS: dict[str, ACITaskPreset] = {
 }
 
 
+ACI_ABLATION_PRESETS: tuple[ACIAblationPreset, ...] = (
+    ACIAblationPreset("medical", "attention", 0.03),
+    ACIAblationPreset("medical", "ffn", 0.03),
+    ACIAblationPreset("thai", "attention", 0.01),
+    ACIAblationPreset("thai", "attention", 0.10),
+    ACIAblationPreset("thai", "ffn", 0.01),
+    ACIAblationPreset("thai", "ffn", 0.10),
+    ACIAblationPreset("malay", "attention", 0.10),
+    ACIAblationPreset("malay", "ffn", 0.10),
+)
+
+
 def get_task_preset(name: str) -> ACITaskPreset:
     try:
         return TASK_PRESETS[name]
@@ -98,9 +123,16 @@ def get_task_preset(name: str) -> ACITaskPreset:
         raise ValueError(f"Unknown ACI task preset: {name}") from error
 
 
-def aci_run_name(task: str, beta: float | None = None) -> str:
+def aci_run_name(
+    task: str,
+    beta: float | None = None,
+    fusion_mode: str = "full",
+) -> str:
     resolved = get_task_preset(task).beta if beta is None else float(beta)
-    return f"{task}_aci_beta{resolved:g}"
+    if fusion_mode not in FUSION_MODES:
+        raise ValueError(f"Unknown ACI fusion mode: {fusion_mode}")
+    mode = "" if fusion_mode == "full" else f"_{fusion_mode}"
+    return f"{task}_aci{mode}_beta{resolved:g}"
 
 
 def aci_sft_run_name(task: str, beta: float | None = None) -> str:

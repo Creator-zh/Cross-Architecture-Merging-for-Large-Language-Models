@@ -18,6 +18,7 @@ if str(REPOSITORY_ROOT) not in sys.path:
     sys.path.insert(0, str(REPOSITORY_ROOT))
 
 from core.aci import ACIConfig, run_aci_pipeline  # noqa: E402
+from core.aci.config import FUSION_MODES  # noqa: E402
 from core.aci.io import write_json  # noqa: E402
 
 
@@ -32,6 +33,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--source-model", required=True, help="Wider/deeper 8B donor")
     parser.add_argument("--output-dir", required=True, type=Path)
     parser.add_argument("--beta", required=True, type=float, help="Injection strength and update cap")
+    parser.add_argument(
+        "--fusion-mode",
+        choices=FUSION_MODES,
+        default="full",
+        help="Update all seven linears, attention only, or FFN only",
+    )
     parser.add_argument("--device", default="auto", help="auto, cpu, cuda, or cuda:N")
     parser.add_argument(
         "--model-dtype",
@@ -150,6 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     config = ACIConfig(
         beta=args.beta,
+        fusion_mode=args.fusion_mode,
         anchor_tokens=args.anchor_tokens,
         anchor_chunk_size=args.anchor_chunk_size,
         ffn_sketch_dim=args.ffn_sketch_dim,
@@ -170,6 +178,7 @@ def main(argv: list[str] | None = None) -> int:
             "source_model": args.source_model,
             "device": args.device,
             "model_dtype": args.model_dtype,
+            "fusion_mode": args.fusion_mode,
             "dry_run": args.dry_run,
             "argv": sys.argv[1:] if argv is None else argv,
             "data_free_contract": {

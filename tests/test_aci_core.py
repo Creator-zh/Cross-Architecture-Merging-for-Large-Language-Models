@@ -2,6 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 import torch.nn as nn
@@ -286,6 +287,86 @@ class PipelineTests(unittest.TestCase):
             self.assertTrue((output / "attention_matches.jsonl").is_file())
             self.assertTrue((output / "ffn_matches.jsonl").is_file())
             self.assertTrue((output / "injections.jsonl").is_file())
+
+    def test_attention_only_never_computes_or_updates_ffn(self):
+        torch.manual_seed(13)
+        reference = _reference_model()
+        target = _reference_model()
+        target.load_state_dict(reference.state_dict())
+        source = _source_model()
+        q_before = target.layers[0].self_attn.q_proj.weight.detach().clone()
+        ffn_before = {
+            name: parameter.detach().clone()
+            for name, parameter in target.layers[0].mlp.named_parameters()
+        }
+        with patch(
+            "core.aci.pipeline.contract_ffn",
+            side_effect=AssertionError("attention-only must not contract FFN"),
+        ):
+            result = run_aci_pipeline(
+                target,
+                reference,
+                source,
+                ACIConfig(
+                    beta=0.05,
+                    fusion_mode="attention",
+                    anchor_tokens=16,
+                    anchor_chunk_size=5,
+                    ffn_sketch_dim=2,
+                    ffn_candidate_k=4,
+                ),
+                compute_device="cpu",
+            )
+        self.assertFalse(torch.equal(q_before, target.layers[0].self_attn.q_proj.weight))
+        for name, parameter in target.layers[0].mlp.named_parameters():
+            self.assertTrue(torch.equal(ffn_before[name], parameter))
+        self.assertEqual(result.ffn_diagnostics, [])
+        self.assertEqual(len(result.attention_diagnostics), 4)
+        self.assertEqual(
+            {row["module"] for row in result.injection_diagnostics},
+            {"q", "k", "v", "o"},
+        )
+        self.assertEqual(result.report["fusion_mode"], "attention")
+
+    def test_ffn_only_never_computes_or_updates_attention(self):
+        torch.manual_seed(17)
+        reference = _reference_model()
+        target = _reference_model()
+        target.load_state_dict(reference.state_dict())
+        source = _source_model()
+        attention_before = {
+            name: parameter.detach().clone()
+            for name, parameter in target.layers[0].self_attn.named_parameters()
+        }
+        gate_before = target.layers[0].mlp.gate_proj.weight.detach().clone()
+        with patch(
+            "core.aci.pipeline.contract_attention",
+            side_effect=AssertionError("ffn-only must not contract attention"),
+        ):
+            result = run_aci_pipeline(
+                target,
+                reference,
+                source,
+                ACIConfig(
+                    beta=0.05,
+                    fusion_mode="ffn",
+                    anchor_tokens=16,
+                    anchor_chunk_size=5,
+                    ffn_sketch_dim=2,
+                    ffn_candidate_k=4,
+                ),
+                compute_device="cpu",
+            )
+        for name, parameter in target.layers[0].self_attn.named_parameters():
+            self.assertTrue(torch.equal(attention_before[name], parameter))
+        self.assertFalse(torch.equal(gate_before, target.layers[0].mlp.gate_proj.weight))
+        self.assertEqual(result.attention_diagnostics, [])
+        self.assertEqual(len(result.ffn_diagnostics), 4)
+        self.assertEqual(
+            {row["module"] for row in result.injection_diagnostics},
+            {"gate", "up", "down"},
+        )
+        self.assertEqual(result.report["fusion_mode"], "ffn")
 
 
 if __name__ == "__main__":
