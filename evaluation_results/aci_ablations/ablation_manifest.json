@@ -1,0 +1,63 @@
+{
+  "method": "aci_module_ablation_evaluation",
+  "comparison": "target_only",
+  "thai_xquad_metric": "f1",
+  "experiments": [
+    {
+      "task": "medical",
+      "variant": "aci_attention_beta0.03",
+      "fusion_mode": "attention",
+      "beta": 0.03,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/medical_aci_attention_beta0.03/fused_model"
+    },
+    {
+      "task": "medical",
+      "variant": "aci_ffn_beta0.03",
+      "fusion_mode": "ffn",
+      "beta": 0.03,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/medical_aci_ffn_beta0.03/fused_model"
+    },
+    {
+      "task": "thai",
+      "variant": "aci_attention_beta0.01",
+      "fusion_mode": "attention",
+      "beta": 0.01,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_attention_beta0.01/fused_model"
+    },
+    {
+      "task": "thai",
+      "variant": "aci_attention_beta0.1",
+      "fusion_mode": "attention",
+      "beta": 0.1,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_attention_beta0.1/fused_model"
+    },
+    {
+      "task": "thai",
+      "variant": "aci_ffn_beta0.01",
+      "fusion_mode": "ffn",
+      "beta": 0.01,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.01/fused_model"
+    },
+    {
+      "task": "thai",
+      "variant": "aci_ffn_beta0.1",
+      "fusion_mode": "ffn",
+      "beta": 0.1,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model"
+    },
+    {
+      "task": "malay",
+      "variant": "aci_attention_beta0.1",
+      "fusion_mode": "attention",
+      "beta": 0.1,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_attention_beta0.1/fused_model"
+    },
+    {
+      "task": "malay",
+      "variant": "aci_ffn_beta0.1",
+      "fusion_mode": "ffn",
+      "beta": 0.1,
+      "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_ffn_beta0.1/fused_model"
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+[
+  {
+    "task": "malay",
+    "variant": "target",
+    "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/Malaysian-Llama-3.2-1B-Instruct-v0.1",
+    "output": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/target/primary",
+    "command": [
+      "/home/ziheng_zhao/miniconda3/envs/lm-eval/bin/python",
+      "src/evaluate.py",
+      "--by_letter",
+      "--shot",
+      "0",
+      "--task",
+      "MalayMMLU",
+      "--base_model",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/models/Malaysian-Llama-3.2-1B-Instruct-v0.1",
+      "--output_folder",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/target/primary"
+    ]
+  },
+  {
+    "task": "malay",
+    "variant": "aci_attention_beta0.1",
+    "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_attention_beta0.1/fused_model",
+    "output": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/aci_attention_beta0.1/primary",
+    "command": [
+      "/home/ziheng_zhao/miniconda3/envs/lm-eval/bin/python",
+      "src/evaluate.py",
+      "--by_letter",
+      "--shot",
+      "0",
+      "--task",
+      "MalayMMLU",
+      "--base_model",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_attention_beta0.1/fused_model",
+      "--output_folder",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/aci_attention_beta0.1/primary"
+    ]
+  },
+  {
+    "task": "malay",
+    "variant": "aci_ffn_beta0.1",
+    "model": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_ffn_beta0.1/fused_model",
+    "output": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/aci_ffn_beta0.1/primary",
+    "command": [
+      "/home/ziheng_zhao/miniconda3/envs/lm-eval/bin/python",
+      "src/evaluate.py",
+      "--by_letter",
+      "--shot",
+      "0",
+      "--task",
+      "MalayMMLU",
+      "--base_model",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/malay_aci_ffn_beta0.1/fused_model",
+      "--output_folder",
+      "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/evaluation_results/aci_ablations/malay/aci_ffn_beta0.1/primary"
+    ]
+  }
+]

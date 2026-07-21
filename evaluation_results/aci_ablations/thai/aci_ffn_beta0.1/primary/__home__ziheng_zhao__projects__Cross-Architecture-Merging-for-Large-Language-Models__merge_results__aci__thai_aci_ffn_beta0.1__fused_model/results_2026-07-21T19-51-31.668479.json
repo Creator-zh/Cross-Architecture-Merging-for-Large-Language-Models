@@ -1,0 +1,263 @@
+{
+  "results": {
+    "xcopa_th": {
+      "name": "xcopa_th",
+      "alias": "xcopa_th",
+      "sample_len": 500,
+      "acc,none": 0.578,
+      "acc_stderr,none": 0.022109039310618552
+    },
+    "xquad_th": {
+      "name": "xquad_th",
+      "alias": "xquad_th",
+      "sample_len": 1190,
+      "f1,none": 0.17788009873737634,
+      "f1_stderr,none": 0.007973420022748673,
+      "exact_match,none": 0.052941176470588235,
+      "exact_match_stderr,none": 0.0064937317453244835
+    },
+    "xnli_th": {
+      "name": "xnli_th",
+      "alias": "xnli_th",
+      "sample_len": 2490,
+      "acc,none": 0.45180722891566266,
+      "acc_stderr,none": 0.009975410845717859
+    }
+  },
+  "group_subtasks": {},
+  "configs": {
+    "xcopa_th": {
+      "task": "xcopa_th",
+      "dataset_path": "xcopa",
+      "dataset_name": "th",
+      "validation_split": "validation",
+      "test_split": "test",
+      "doc_to_text": "functools.partial(<function doc_to_text at 0x778f9a0aa950>, connector={'cause': 'เพราะ', 'effect': 'ดังนั้น'})",
+      "doc_to_target": "label",
+      "unsafe_code": false,
+      "doc_to_choice": "def doc_to_choice(doc):\n    return [convert_choice(doc[\"choice1\"]), convert_choice(doc[\"choice2\"])]\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "functools.partial(<function doc_to_text at 0x778f9a0aa950>, connector={'cause': 'เพราะ', 'effect': 'ดังนั้น'})",
+        "doc_to_choice": "<function doc_to_choice at 0x778f99da09d0>",
+        "doc_to_target": "label",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc"
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model",
+        "dtype": "float",
+        "trust_remote_code": true,
+        "config_source": "/data/ziheng_zhao/data/lm-evaluation-harness/lm_eval/tasks/xcopa/default_th.yaml"
+      }
+    },
+    "xnli_th": {
+      "task": "xnli_th",
+      "dataset_path": "xnli",
+      "dataset_name": "th",
+      "training_split": "train",
+      "validation_split": "validation",
+      "doc_to_text": "",
+      "doc_to_target": "label",
+      "unsafe_code": false,
+      "doc_to_choice": "{{[premise+\", ถูกต้อง? ใช่, \"+hypothesis,premise+\", ถูกต้อง? ดังนั้น, \"+hypothesis,premise+\", ถูกต้อง? ไม่, \"+hypothesis]}}",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "",
+        "doc_to_choice": "{{[premise+\", ถูกต้อง? ใช่, \"+hypothesis,premise+\", ถูกต้อง? ดังนั้น, \"+hypothesis,premise+\", ถูกต้อง? ไม่, \"+hypothesis]}}",
+        "doc_to_target": "label",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "acc",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "multiple_choice",
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model",
+        "dtype": "float",
+        "trust_remote_code": true,
+        "config_source": "/data/ziheng_zhao/data/lm-evaluation-harness/lm_eval/tasks/xnli/xnli_th.yaml"
+      }
+    },
+    "xquad_th": {
+      "task": "xquad_th",
+      "dataset_path": "xquad",
+      "dataset_name": "xquad.th",
+      "validation_split": "validation",
+      "doc_to_text": "บริบท: {{context}}\n\nคำถาม: {{question}}\n\nคำตอบ:",
+      "doc_to_target": "{{answers[\"text\"][0]}}",
+      "unsafe_code": false,
+      "process_results": "def process_results_qa(doc, results):\n    preds = results[0]\n    reference = doc[\"answers\"][\"text\"][0]\n    f1_sum = squad_metrics.compute_f1(reference, preds)\n    exact_match = squad_metrics.compute_exact(reference, preds)\n    return {\"f1\": f1_sum, \"exact_match\": exact_match}\n",
+      "description": "",
+      "target_delimiter": " ",
+      "fewshot_delimiter": "\n\n",
+      "fewshot_config": {
+        "sampler": "default",
+        "split": null,
+        "process_docs": null,
+        "fewshot_indices": null,
+        "samples": null,
+        "doc_to_text": "บริบท: {{context}}\n\nคำถาม: {{question}}\n\nคำตอบ:",
+        "doc_to_choice": null,
+        "doc_to_target": "{{answers[\"text\"][0]}}",
+        "gen_prefix": null,
+        "fewshot_delimiter": "\n\n",
+        "target_delimiter": " "
+      },
+      "num_fewshot": 0,
+      "metric_list": [
+        {
+          "metric": "exact_match",
+          "aggregation": "mean",
+          "higher_is_better": true
+        },
+        {
+          "metric": "f1",
+          "aggregation": "mean",
+          "higher_is_better": true
+        }
+      ],
+      "output_type": "generate_until",
+      "generation_kwargs": {
+        "until": [
+          "\n"
+        ],
+        "do_sample": false,
+        "temperature": 0.0
+      },
+      "repeats": 1,
+      "should_decontaminate": false,
+      "metadata": {
+        "version": 1.0,
+        "pretrained": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model",
+        "dtype": "float",
+        "trust_remote_code": true,
+        "config_source": "/data/ziheng_zhao/data/lm-evaluation-harness/lm_eval/tasks/xquad/xquad_th.yaml"
+      }
+    }
+  },
+  "versions": {
+    "xcopa_th": 1.0,
+    "xnli_th": 1.0,
+    "xquad_th": 1.0
+  },
+  "n-shot": {
+    "xcopa_th": 0,
+    "xnli_th": 0,
+    "xquad_th": 0
+  },
+  "higher_is_better": {
+    "xcopa_th": {
+      "acc": true
+    },
+    "xnli_th": {
+      "acc": true
+    },
+    "xquad_th": {
+      "exact_match": true,
+      "f1": true
+    }
+  },
+  "n-samples": {
+    "xcopa_th": {
+      "original": 500,
+      "effective": 500
+    },
+    "xquad_th": {
+      "original": 1190,
+      "effective": 1190
+    },
+    "xnli_th": {
+      "original": 2490,
+      "effective": 2490
+    }
+  },
+  "config": {
+    "model": "hf",
+    "model_args": {
+      "pretrained": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model",
+      "dtype": "float",
+      "trust_remote_code": true
+    },
+    "model_num_parameters": 1235814400,
+    "model_dtype": "torch.float32",
+    "model_revision": "main",
+    "model_sha": "",
+    "batch_size": "8",
+    "batch_sizes": [],
+    "device": "cuda:0",
+    "use_cache": null,
+    "limit": null,
+    "bootstrap_iters": 100000,
+    "gen_kwargs": {},
+    "random_seed": 0,
+    "numpy_seed": 1234,
+    "torch_seed": 1234,
+    "fewshot_seed": 1234
+  },
+  "git_hash": "3dc63eb",
+  "date": 1784633883.6100414,
+  "pretty_env_info": "PyTorch version: 2.13.0+cu130\nIs debug build: False\nCUDA used to build PyTorch: 13.0\nROCM used to build PyTorch: N/A\n\nOS: Ubuntu 24.04 LTS (x86_64)\nGCC version: (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nClang version: Could not collect\nCMake version: Could not collect\nLibc version: glibc-2.39\n\nPython version: 3.10.20 (main, Jun 11 2026, 15:17:37) [GCC 14.3.0] (64-bit runtime)\nPython platform: Linux-6.8.0-124-generic-x86_64-with-glibc2.39\nIs CUDA available: True\nCUDA runtime version: 12.0.140\nCUDA_MODULE_LOADING set to: \nGPU models and configuration: \nGPU 0: NVIDIA A100-SXM4-80GB\nGPU 1: NVIDIA A100-SXM4-80GB\nGPU 2: NVIDIA A100-SXM4-80GB\nGPU 3: NVIDIA A100-SXM4-80GB\nGPU 4: NVIDIA A100-SXM4-80GB\nGPU 5: NVIDIA A100-SXM4-80GB\nGPU 6: NVIDIA A100-SXM4-80GB\n\nNvidia driver version: 590.44.01\ncuDNN version: Could not collect\nIs XPU available: False\nHIP runtime version: N/A\nMIOpen runtime version: N/A\nIs XNNPACK available: False\nCaching allocator config: N/A\n\nCPU:\nArchitecture:                            x86_64\nCPU op-mode(s):                          32-bit, 64-bit\nAddress sizes:                           46 bits physical, 57 bits virtual\nByte Order:                              Little Endian\nCPU(s):                                  112\nOn-line CPU(s) list:                     0-111\nVendor ID:                               GenuineIntel\nModel name:                              Intel(R) Xeon(R) Gold 6348 CPU @ 2.60GHz\nCPU family:                              6\nModel:                                   106\nThread(s) per core:                      2\nCore(s) per socket:                      28\nSocket(s):                               2\nStepping:                                6\nCPU(s) scaling MHz:                      36%\nCPU max MHz:                             3500.0000\nCPU min MHz:                             800.0000\nBogoMIPS:                                5200.00\nFlags:                                   fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc art arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 ds_cpl vmx smx est tm2 ssse3 sdbg fma cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic movbe popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm abm 3dnowprefetch cpuid_fault epb cat_l3 intel_ppin ssbd mba ibrs ibpb stibp ibrs_enhanced tpr_shadow flexpriority ept vpid ept_ad fsgsbase tsc_adjust bmi1 avx2 smep bmi2 erms invpcid cqm rdt_a avx512f avx512dq rdseed adx smap avx512ifma clflushopt clwb intel_pt avx512cd sha_ni avx512bw avx512vl xsaveopt xsavec xgetbv1 xsaves cqm_llc cqm_occup_llc cqm_mbm_total cqm_mbm_local split_lock_detect wbnoinvd dtherm ida arat pln pts vnmi avx512vbmi umip pku ospke avx512_vbmi2 gfni vaes vpclmulqdq avx512_vnni avx512_bitalg tme avx512_vpopcntdq la57 rdpid fsrm md_clear pconfig flush_l1d arch_capabilities\nVirtualization:                          VT-x\nL1d cache:                               2.6 MiB (56 instances)\nL1i cache:                               1.8 MiB (56 instances)\nL2 cache:                                70 MiB (56 instances)\nL3 cache:                                84 MiB (2 instances)\nNUMA node(s):                            2\nNUMA node0 CPU(s):                       0-27,56-83\nNUMA node1 CPU(s):                       28-55,84-111\nVulnerability Gather data sampling:      Mitigation; Microcode\nVulnerability Indirect target selection: Mitigation; Aligned branch/return thunks\nVulnerability Itlb multihit:             Not affected\nVulnerability L1tf:                      Not affected\nVulnerability Mds:                       Not affected\nVulnerability Meltdown:                  Not affected\nVulnerability Mmio stale data:           Mitigation; Clear CPU buffers; SMT vulnerable\nVulnerability Reg file data sampling:    Not affected\nVulnerability Retbleed:                  Not affected\nVulnerability Spec rstack overflow:      Not affected\nVulnerability Spec store bypass:         Mitigation; Speculative Store Bypass disabled via prctl\nVulnerability Spectre v1:                Mitigation; usercopy/swapgs barriers and __user pointer sanitization\nVulnerability Spectre v2:                Mitigation; Enhanced / Automatic IBRS; IBPB conditional; PBRSB-eIBRS SW sequence; BHI SW loop, KVM SW loop\nVulnerability Srbds:                     Not affected\nVulnerability Tsa:                       Not affected\nVulnerability Tsx async abort:           Not affected\nVulnerability Vmscape:                   Not affected\n\nVersions of relevant libraries:\n[pip3] numpy==2.2.6\n[pip3] nvidia-cublas==13.1.1.3\n[pip3] nvidia-cuda-cupti==13.0.85\n[pip3] nvidia-cuda-nvrtc==13.0.88\n[pip3] nvidia-cuda-runtime==13.0.96\n[pip3] nvidia-cudnn-cu13==9.20.0.48\n[pip3] nvidia-cufft==12.0.0.61\n[pip3] nvidia-curand==10.4.0.35\n[pip3] nvidia-cusolver==12.0.4.66\n[pip3] nvidia-cusparse==12.6.3.3\n[pip3] nvidia-cusparselt-cu13==0.8.1\n[pip3] nvidia-nccl-cu13==2.29.7\n[pip3] nvidia-nvjitlink==13.3.33\n[pip3] nvidia-nvtx==13.0.85\n[pip3] torch==2.13.0\n[pip3] triton==3.7.1\n[conda] numpy                      2.2.6            pypi_0           pypi\n[conda] nvidia-cublas              13.1.1.3         pypi_0           pypi\n[conda] nvidia-cuda-cupti          13.0.85          pypi_0           pypi\n[conda] nvidia-cuda-nvrtc          13.0.88          pypi_0           pypi\n[conda] nvidia-cuda-runtime        13.0.96          pypi_0           pypi\n[conda] nvidia-cudnn-cu13          9.20.0.48        pypi_0           pypi\n[conda] nvidia-cufft               12.0.0.61        pypi_0           pypi\n[conda] nvidia-curand              10.4.0.35        pypi_0           pypi\n[conda] nvidia-cusolver            12.0.4.66        pypi_0           pypi\n[conda] nvidia-cusparse            12.6.3.3         pypi_0           pypi\n[conda] nvidia-cusparselt-cu13     0.8.1            pypi_0           pypi\n[conda] nvidia-nccl-cu13           2.29.7           pypi_0           pypi\n[conda] nvidia-nvjitlink           13.3.33          pypi_0           pypi\n[conda] nvidia-nvtx                13.0.85          pypi_0           pypi\n[conda] torch                      2.13.0           pypi_0           pypi\n[conda] triton                     3.7.1            pypi_0           pypi",
+  "transformers_version": "4.46.3",
+  "lm_eval_version": "0.4.13.dev0",
+  "upper_git_hash": null,
+  "tokenizer_pad_token": [
+    "<|end_of_text|>",
+    "128001"
+  ],
+  "tokenizer_eos_token": [
+    "<|eot_id|>",
+    "128009"
+  ],
+  "tokenizer_bos_token": [
+    "<|begin_of_text|>",
+    "128000"
+  ],
+  "eot_token_id": 128009,
+  "max_length": 131072,
+  "task_hashes": {},
+  "model_source": "hf",
+  "model_name": "/home/ziheng_zhao/projects/Cross-Architecture-Merging-for-Large-Language-Models/merge_results/aci/thai_aci_ffn_beta0.1/fused_model",
+  "model_name_sanitized": "__home__ziheng_zhao__projects__Cross-Architecture-Merging-for-Large-Language-Models__merge_results__aci__thai_aci_ffn_beta0.1__fused_model",
+  "system_instruction": null,
+  "system_instruction_sha": null,
+  "fewshot_as_multiturn": null,
+  "chat_template": null,
+  "chat_template_sha": null,
+  "total_evaluation_time_seconds": "813.6648820177652"
+}
